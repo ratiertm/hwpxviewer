@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.venv/
+__pycache__/
+*.pyc
+
+# Build output
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Test output
+coverage/
+playwright-report/
+test-results/
+.pytest_cache/
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+.idea/
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Temporary
+*.tmp
+*.swp
+.cache/
+
+# External reference projects (large, have their own git repos)
+reference/
+
+# Planning tool internal state (local only)
+.bkit-memory.json
+.pdca-status.json
+**/.bkit/
+**/.claude/

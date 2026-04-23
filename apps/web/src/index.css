@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Theme tokens (semantic CSS variables).
+ *
+ * Mirrors docs/DESIGN_SPEC.md §2 Color Tokens. Dark is the default.
+ * M1 #4 will expand this to the full token set; keep minimal for now so
+ * the scaffolding dev server can render.
+ */
+
+:root,
+html {
+  color-scheme: dark;
+
+  --bg: #09090b;          /* zinc-950  */
+  --bg-subtle: #18181b;   /* zinc-900  */
+  --bg-muted: rgb(24 24 27 / 0.5);
+  --bg-dock: rgb(24 24 27 / 0.95);
+  --bg-panel: rgb(9 9 11 / 0.95);
+  --paper-bg: #18181b;
+  --input-bg: #18181b;
+  --page-bg: #09090b;
+
+  --text: #e4e4e7;         /* zinc-200 */
+  --text-strong: #ffffff;
+  --text-muted: #a1a1aa;   /* zinc-400 */
+  --text-subtle: #71717a;  /* zinc-500 */
+  --text-faint: #52525b;   /* zinc-600 */
+
+  --border: #27272a;       /* zinc-800 */
+  --border-subtle: rgb(39 39 42 / 0.6);
+
+  --accent: #818cf8;       /* indigo-400 */
+}
+
+html.light {
+  color-scheme: light;
+
+  --bg: #fafaf9;           /* stone-50  */
+  --bg-subtle: #ffffff;
+  --bg-muted: #f5f5f4;     /* stone-100 */
+  --bg-dock: rgb(255 255 255 / 0.95);
+  --bg-panel: rgb(255 255 255 / 0.95);
+  --paper-bg: #ffffff;
+  --input-bg: #f5f5f4;
+  --page-bg: #fafaf9;
+
+  --text: #44403c;         /* stone-700 */
+  --text-strong: #1c1917;  /* stone-900 */
+  --text-muted: #57534e;   /* stone-600 */
+  --text-subtle: #78716c;  /* stone-500 */
+  --text-faint: #a8a29e;   /* stone-400 */
+
+  --border: #e7e5e4;       /* stone-200 */
+  --border-subtle: rgb(231 229 228 / 0.8);
+
+  --accent: #6366f1;       /* indigo-500 */
+}
+
+body {
+  margin: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR',
+    'Malgun Gothic', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
