@@ -1,10 +1,18 @@
 /**
  * Shared types for HWPX Viewer web app.
  *
- * Source of truth: docs/COMPONENT_INVENTORY.md §15 (existing model)
- *                + docs/02-design/features/hwpx-viewer-mvp.design.md §3.1 (MVP additions).
+ * Source of truth: docs/02-design/features/hwpx-viewer-mvp.design.md v0.3
+ * + docs/COMPONENT_INVENTORY.md §15.
  *
- * Do NOT change types here without updating COMPONENT_INVENTORY §15 first.
+ * Design v0.3 switched the document model from semantic Blocks
+ * (h1/h2/lead/p/table) to **Run coordinates**:
+ *   - Rendering is done by rhwp → SVG (pixel-accurate, like Hancom preview).
+ *   - Editing addresses runs by ``{sec, para, charOffset}``.
+ *
+ * The legacy ``Block`` family (TextBlock, TableBlock, PageBreakBlock) is
+ * retained ONLY for the word/table diff engine in ``src/lib/diff/*`` — which
+ * stays useful for inline cherry-pick visualisation. Do not introduce new
+ * production code paths that depend on those types.
  */
 
 // ============================================================
@@ -13,10 +21,6 @@
 
 export type ThemeName = 'dark' | 'light';
 
-/**
- * Theme token bag. Values are Tailwind utility class fragments used by
- * components as `className={t.bg}`. Mirrors DESIGN_SPEC.md §2.
- */
 export interface Theme {
   bg: string;
   bgSubtle: string;
@@ -55,67 +59,74 @@ export interface Theme {
 }
 
 // ============================================================
-//  Pages & Blocks
+//  Document session (M4R)
 // ============================================================
 
-export interface CoverPage {
-  id: 0;
-  title: 'Cover';
-  section: '00';
-  isCover: true;
-}
-
-export interface ContentPage {
-  id: number;
-  title: string;
-  section: string;
-  body: Block[];
-}
-
-export type Page = CoverPage | ContentPage;
-
-export type Block = TextBlock | TableBlock | PageBreakBlock;
-
-export interface TextBlock {
-  type: 'h1' | 'h2' | 'lead' | 'p';
-  text: string;
-}
-
-export interface TableBlock {
-  type: 'table';
-  headers: string[];
-  rows: string[][];
-}
-
-export interface PageBreakBlock {
-  type: 'pageBreak';
+export interface DocumentInfo {
+  uploadId: string;
+  fileName: string;
+  fileSize: number;
+  pageCount: number;
+  /** Monotonically increasing version — incremented after every successful edit. */
+  version: number;
 }
 
 // ============================================================
-//  History & Edits
+//  Run coordinates (M5R/M6R)
 // ============================================================
 
+/**
+ * A single point inside the document. Matches the rhwp WASM edit-API
+ * signature ``(section_idx, para_idx, char_offset)``.
+ */
+export interface RunLocation {
+  sec: number;
+  para: number;
+  charOffset: number;
+}
+
+/** A contiguous text range. */
+export interface Selection {
+  start: RunLocation;
+  length: number;
+}
+
+export interface SelectionRect {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+// ============================================================
+//  Editing & history (M6R)
+// ============================================================
+
+/**
+ * A single recorded edit. Text-level snapshot enables undone toggle without
+ * re-running Claude or re-parsing HWPX.
+ */
 export interface HistoryEntry {
   id: number;
   ts: number;
-  pageId: number;
-  pageTitle: string;
-  oldBody: Block[];
-  newBody: Block[];
+  selection: Selection;
+  oldText: string;
+  newText: string;
   action: string;
   undone: boolean;
 }
 
+/** Edit metadata attached to an assistant chat message. */
 export interface Edit {
   historyId: number;
-  pageId: number;
-  pageTitle: string;
-  oldBody: Block[];
-  newBody: Block[];
+  selection: Selection;
+  oldText: string;
+  newText: string;
 }
 
 // ============================================================
-//  Chat messages
+//  Chat messages (M7R — unchanged from prototype)
 // ============================================================
 
 export interface Message {
@@ -128,7 +139,7 @@ export interface Message {
 }
 
 // ============================================================
-//  Inline editing
+//  Inline editing state machine (M6R/M7R)
 // ============================================================
 
 export type InlineActionId = 'rewrite' | 'shorten' | 'translate';
@@ -136,39 +147,33 @@ export type InlineActionId = 'rewrite' | 'shorten' | 'translate';
 export interface InlineAction {
   id: InlineActionId;
   label: string;
-  // Icon is a lucide-react component. Typed loosely to avoid pulling
-  // the dep into this pure-types module.
-  icon: unknown;
+  icon: unknown; // lucide-react component
 }
 
 export type InlineEditing =
   | {
-      pageId: number;
-      blockIdx: number;
+      selection: Selection;
       original: string;
       action: InlineActionId;
       status: 'loading';
     }
   | {
-      pageId: number;
-      blockIdx: number;
+      selection: Selection;
       original: string;
       action: InlineActionId;
       status: 'error';
       error: string;
     }
   | {
-      pageId: number;
-      blockIdx: number;
+      selection: Selection;
       original: string;
       suggestion: string;
-      selectedText: string;
       action: InlineActionId;
       status: 'ready';
     };
 
 // ============================================================
-//  Diff engine (word-level text diff)
+//  Diff engine (word-level text diff) — prototype preserved
 // ============================================================
 
 export type Op =
@@ -181,7 +186,36 @@ export type Hunk =
   | { kind: 'change'; id: number; del: string; add: string };
 
 // ============================================================
-//  Diff engine (table-level)
+//  Legacy Block model (kept for table diff engine only)
+// ============================================================
+
+/**
+ * @deprecated Block-level types are retained solely so ``src/lib/diff/table.ts``
+ * can still be re-used for cherry-pick visualisation. New code should address
+ * the document via ``RunLocation`` / ``Selection``.
+ */
+export interface TextBlock {
+  type: 'h1' | 'h2' | 'lead' | 'p';
+  text: string;
+}
+
+/** @deprecated see TextBlock. */
+export interface TableBlock {
+  type: 'table';
+  headers: string[];
+  rows: string[][];
+}
+
+/** @deprecated see TextBlock. */
+export interface PageBreakBlock {
+  type: 'pageBreak';
+}
+
+/** @deprecated see TextBlock. */
+export type Block = TextBlock | TableBlock | PageBreakBlock;
+
+// ============================================================
+//  Table diff (used by cherry-pick)
 // ============================================================
 
 export type HeaderOp =
@@ -215,33 +249,9 @@ export interface TableDiff {
 }
 
 // ============================================================
-//  MVP additions (Design §3.1)
+//  Errors (unchanged mirror of backend errors.py)
 // ============================================================
 
-export interface DocumentMeta {
-  uploadId: string;
-  fileName: string;
-  fileSize: number;
-  ownerHash?: string;
-  hwpxVersion?: string;
-  /** Count of OWPML nodes that were stashed as passthrough (unsupported). */
-  unsupportedBlockCount: number;
-}
-
-export interface SearchHit {
-  pageId: number;
-  blockIdx: number;
-  /** Defined only for TableBlock matches. */
-  cell?: { rowIdx: number; colIdx: number };
-  /** Surrounding snippet actually displayed in the result list. */
-  text: string;
-  /** Offsets within the full block text (or cell text). */
-  range: { start: number; end: number };
-}
-
-/**
- * Error catalog — mirrors design §6.1. Keep in sync with backend errors.py.
- */
 export type ErrorCode =
   | 'INVALID_FILE'
   | 'FILE_TOO_LARGE'
@@ -257,10 +267,7 @@ export type ErrorCode =
 
 export interface AppError {
   code: ErrorCode;
-  /** User-facing message, Korean. */
   message: string;
-  /** Debug-only detail, not shown to end users. */
   detail?: string;
-  /** Whether the UI should offer a retry affordance. */
   recoverable: boolean;
 }

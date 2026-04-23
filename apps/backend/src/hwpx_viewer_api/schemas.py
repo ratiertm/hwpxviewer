@@ -1,12 +1,16 @@
 """Pydantic I/O models.
 
 Shape mirrors ``apps/web/src/types/index.ts`` so client/server speak the same
-structures. HWPX Block schemas mirror COMPONENT_INVENTORY §15 / Design §3.1.
+structures.
+
+Design v0.3: Block model retired. Document is addressed by Run coordinates
+(section, paragraph, character offset). All editing flows through the rhwp
+WASM engine — see ``services/rhwp_wasm.py``.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -14,7 +18,7 @@ from .prompts import PromptId
 
 
 # ============================================================
-#  Claude proxy I/O
+#  Claude proxy I/O (M2, unchanged)
 # ============================================================
 
 
@@ -26,11 +30,7 @@ class ChatMessage(BaseModel):
 
 
 class ClaudeStreamRequest(BaseModel):
-    """Client → backend request for streaming chat.
-
-    ``system`` is an identifier; the server expands it to the actual system
-    prompt string via prompts.get_prompt().
-    """
+    """Client → backend request for streaming chat."""
 
     system: PromptId
     messages: list[ChatMessage] = Field(min_length=1)
@@ -48,7 +48,7 @@ class ClaudeOnceResponse(BaseModel):
 
 
 # ============================================================
-#  Health
+#  Health (unchanged)
 # ============================================================
 
 
@@ -64,65 +64,117 @@ class ReadinessResponse(BaseModel):
 
 
 # ============================================================
-#  Block model (frontend-mirrored)
+#  Document session (M4R)
 # ============================================================
 
 
-class TextBlock(BaseModel):
-    type: Literal["h1", "h2", "lead", "p"]
-    text: str
+class DocumentInfo(BaseModel):
+    """Metadata for an uploaded HWPX document."""
 
-
-class TableBlock(BaseModel):
-    type: Literal["table"] = "table"
-    headers: list[str]
-    rows: list[list[str]]
-
-
-class PageBreakBlock(BaseModel):
-    type: Literal["pageBreak"] = "pageBreak"
-
-
-Block = Annotated[Union[TextBlock, TableBlock, PageBreakBlock], Field(discriminator="type")]
-
-
-class CoverPage(BaseModel):
-    id: Literal[0] = 0
-    title: Literal["Cover"] = "Cover"
-    section: Literal["00"] = "00"
-    isCover: Literal[True] = True
-
-
-class ContentPage(BaseModel):
-    id: int = Field(ge=1)
-    title: str
-    section: str
-    body: list[Block] = Field(default_factory=list)
-    isCover: Literal[False] = False
-
-
-# Discriminated union using the ``isCover`` flag — matches the TS union.
-Page = Annotated[Union[CoverPage, ContentPage], Field(discriminator="isCover")]
-
-
-class DocumentMeta(BaseModel):
     uploadId: str
     fileName: str
     fileSize: int
-    hwpxVersion: str | None = None
-    unsupportedBlockCount: int = 0
+    pageCount: int
+    version: int = 0  # increments on every successful edit
+
+
+class UploadResponse(BaseModel):
+    """Result of ``POST /api/upload``."""
+
+    document: DocumentInfo
 
 
 # ============================================================
-#  /api/import  /api/export
+#  Run coordinates (M5R/M6R) — the single addressing unit for edits
 # ============================================================
 
 
-class ImportResponse(BaseModel):
-    pages: list[Page]
-    meta: DocumentMeta
+class RunLocation(BaseModel):
+    """A single point inside the document.
+
+    ``sec`` — section index (0-based)
+    ``para`` — paragraph index within the section (0-based)
+    ``charOffset`` — character offset within the paragraph's concatenated text
+    """
+
+    sec: int = Field(ge=0)
+    para: int = Field(ge=0)
+    charOffset: int = Field(ge=0)
 
 
-class ExportRequest(BaseModel):
-    pages: list[Page]
+class Selection(BaseModel):
+    """A contiguous text range. Matches the shape the rhwp ``insertText``/
+    ``deleteText`` API expects: start location + character length.
+    """
+
+    start: RunLocation
+    length: int = Field(ge=0)
+
+
+# ============================================================
+#  Hit-test (M5R) — screen (x, y) → RunLocation
+# ============================================================
+
+
+class HitTestRequest(BaseModel):
     uploadId: str
+    page: int = Field(ge=0)
+    x: float
+    y: float
+
+
+class HitTestResponse(BaseModel):
+    location: RunLocation | None = None  # None if the point is outside any text
+
+
+# ============================================================
+#  Selection rects (M5R) — Selection → highlight pixel boxes
+# ============================================================
+
+
+class SelectionRectsRequest(BaseModel):
+    uploadId: str
+    selection: Selection
+
+
+class SelectionRect(BaseModel):
+    page: int
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class SelectionRectsResponse(BaseModel):
+    rects: list[SelectionRect]
+
+
+# ============================================================
+#  Edit (M6R) — apply a text replacement
+# ============================================================
+
+
+class EditRequest(BaseModel):
+    uploadId: str
+    selection: Selection  # range to be replaced
+    newText: str          # replacement text (may be empty to pure-delete)
+
+
+class EditResponse(BaseModel):
+    editId: int
+    document: DocumentInfo     # updated version / pageCount
+    affectedPages: list[int]   # pages that need re-rendering
+
+
+class UndoRequest(BaseModel):
+    uploadId: str
+    editId: int
+
+
+class TextRangeRequest(BaseModel):
+    uploadId: str
+    selection: Selection
+
+
+class TextRangeResponse(BaseModel):
+    text: str

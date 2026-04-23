@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .config import get_settings
-from .routes import claude, export, health, import_
+from .routes import claude, health
 from .security.cors import install_cors
 
 
@@ -31,16 +31,16 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="HWPX Viewer API",
         version=__version__,
-        description="Backend for the HWPX Viewer. Exposes Claude proxy (M2) and "
-        "HWPX import/export (M3).",
+        description="Backend for the HWPX Viewer. Exposes Claude proxy (M2). "
+        "HWPX I/O + rhwp rendering endpoints will be added in M3R~M7R.",
     )
 
     install_cors(app, settings)
 
     app.include_router(health.router)
     app.include_router(claude.router)
-    app.include_router(import_.router)
-    app.include_router(export.router)
+    # M3 import/export routes removed (design v0.3).
+    # New endpoints (upload/render/hit-test/edit/download) land in M3R~M6R.
 
     return app
 
