@@ -1,75 +1,75 @@
-"""Upload LRU + TTL store tests."""
+"""Upload LRU + TTL store tests (v0.3 — DocumentSession payload)."""
 
 from __future__ import annotations
 
-import os
-import tempfile
 import time
+from dataclasses import dataclass, field
 
 from hwpx_viewer_api.services.upload_store import UploadStore
 
 
-def _touch(path: str) -> None:
-    with open(path, "wb") as f:
-        f.write(b"\x00")
+@dataclass
+class _FakeSession:
+    """Stand-in for ``DocumentSession`` — records close() calls."""
+
+    page_count: int = 1
+    closed: bool = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
-def test_put_and_get_round_trip(tmp_path) -> None:
+def test_put_and_get_round_trip() -> None:
     store = UploadStore(capacity=5, ttl_seconds=60)
-    p = tmp_path / "a.hwpx"
-    _touch(str(p))
-    uid = store.put(
-        hwpx_path=str(p), overlays=[{"x": 1}], doc={"y": 2}, file_name="a.hwpx", file_size=1
-    )
+    session = _FakeSession(page_count=3)
+    uid = store.put(session=session, file_name="a.hwpx", file_size=1024)
     entry = store.get(uid)
     assert entry is not None
-    assert entry.overlays == [{"x": 1}]
     assert entry.file_name == "a.hwpx"
+    assert entry.file_size == 1024
+    assert entry.session is session
 
 
-def test_ttl_expires_entry_and_removes_file(tmp_path) -> None:
-    store = UploadStore(capacity=5, ttl_seconds=0)  # everything expires immediately
-    p = tmp_path / "a.hwpx"
-    _touch(str(p))
-    uid = store.put(
-        hwpx_path=str(p), overlays=[], doc={}, file_name="a.hwpx", file_size=1
-    )
+def test_ttl_expires_entry_and_closes_session() -> None:
+    store = UploadStore(capacity=5, ttl_seconds=0)
+    session = _FakeSession()
+    uid = store.put(session=session, file_name="a.hwpx", file_size=1)
     time.sleep(0.01)
     assert store.get(uid) is None
-    assert not p.exists()
+    assert session.closed is True
 
 
-def test_capacity_evicts_oldest(tmp_path) -> None:
+def test_capacity_evicts_oldest_and_closes_session() -> None:
     store = UploadStore(capacity=2, ttl_seconds=60)
-    ids: list[str] = []
-    files: list[str] = []
-    for i in range(3):
-        p = tmp_path / f"{i}.hwpx"
-        _touch(str(p))
-        files.append(str(p))
-        ids.append(
-            store.put(
-                hwpx_path=str(p),
-                overlays=[],
-                doc={},
-                file_name=f"{i}.hwpx",
-                file_size=1,
-            )
-        )
-    # First entry should be evicted; later two survive.
+    sessions = [_FakeSession() for _ in range(3)]
+    ids = [
+        store.put(session=sessions[i], file_name=f"{i}.hwpx", file_size=1)
+        for i in range(3)
+    ]
+    # First entry should be evicted and its session closed.
     assert store.get(ids[0]) is None
-    assert not os.path.exists(files[0])
+    assert sessions[0].closed is True
+    # Later two survive.
     assert store.get(ids[1]) is not None
     assert store.get(ids[2]) is not None
+    assert sessions[1].closed is False
+    assert sessions[2].closed is False
 
 
-def test_delete_removes_entry_and_file(tmp_path) -> None:
+def test_delete_removes_entry_and_closes_session() -> None:
     store = UploadStore()
-    p = tmp_path / "x.hwpx"
-    _touch(str(p))
-    uid = store.put(
-        hwpx_path=str(p), overlays=[], doc={}, file_name="x.hwpx", file_size=1
-    )
+    session = _FakeSession()
+    uid = store.put(session=session, file_name="x.hwpx", file_size=1)
     store.delete(uid)
     assert store.get(uid) is None
-    assert not p.exists()
+    assert session.closed is True
+
+
+def test_clear_closes_all_sessions() -> None:
+    store = UploadStore()
+    sessions = [_FakeSession() for _ in range(3)]
+    for i, s in enumerate(sessions):
+        store.put(session=s, file_name=f"{i}.hwpx", file_size=1)
+    store.clear()
+    assert len(store) == 0
+    assert all(s.closed for s in sessions)

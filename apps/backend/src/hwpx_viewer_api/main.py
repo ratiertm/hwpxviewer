@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .config import get_settings
-from .routes import claude, health
+from .routes import claude, download, health, render, upload
 from .security.cors import install_cors
 
 
@@ -39,8 +39,11 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(claude.router)
-    # M3 import/export routes removed (design v0.3).
-    # New endpoints (upload/render/hit-test/edit/download) land in M3R~M6R.
+    # M3R — rhwp-backed rendering + I/O.
+    app.include_router(upload.router)
+    app.include_router(render.router)
+    app.include_router(download.router)
+    # /api/hit-test + /api/edit land in M5R / M6R respectively.
 
     return app
 

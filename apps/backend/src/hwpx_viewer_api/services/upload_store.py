@@ -1,8 +1,9 @@
-"""In-memory LRU upload session store (Design §4.2).
+"""In-memory LRU upload session store (Design v0.3 §4.2).
 
-Keyed by a UUID ``uploadId`` issued on /api/import. Entry payload bundles the
-path to the temp-saved source .hwpx plus the overlay and doc snapshots so
-/api/export can apply edits without re-parsing the original file.
+Keyed by a UUID ``uploadId`` issued on ``/api/upload``. Entry payload bundles
+the document metadata and the live rhwp ``DocumentSession`` so every
+``/api/render``, ``/api/hit-test``, ``/api/edit`` call can reuse the same
+WASM-loaded document without re-parsing.
 
 Limitations (explicitly accepted for v1.0):
 - Process-local: does not survive restarts, cannot be shared between
@@ -13,24 +14,25 @@ Limitations (explicitly accepted for v1.0):
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:  # avoid eager import of rhwp_wasm (wasmtime heavy)
+    from .rhwp_wasm import DocumentSession
 
 
 @dataclass
 class UploadEntry:
     upload_id: str
-    hwpx_path: str
-    overlays: list[dict[str, Any]]  # index == section_idx
-    doc: dict[str, Any]
     file_name: str
     file_size: int
+    session: "DocumentSession"
     created_at: float = field(default_factory=time.time)
+    version: int = 0  # increments on every successful edit
 
 
 class UploadStore:
@@ -45,27 +47,23 @@ class UploadStore:
     def put(
         self,
         *,
-        hwpx_path: str,
-        overlays: list[dict[str, Any]],
-        doc: dict[str, Any],
+        session: "DocumentSession",
         file_name: str,
         file_size: int,
     ) -> str:
         upload_id = str(uuid.uuid4())
         entry = UploadEntry(
             upload_id=upload_id,
-            hwpx_path=hwpx_path,
-            overlays=overlays,
-            doc=doc,
             file_name=file_name,
             file_size=file_size,
+            session=session,
         )
         with self._lock:
             self._entries[upload_id] = entry
             self._evict_locked()
         return upload_id
 
-    def get(self, upload_id: str) -> UploadEntry | None:
+    def get(self, upload_id: str) -> Optional[UploadEntry]:
         now = time.time()
         with self._lock:
             entry = self._entries.get(upload_id)
@@ -73,9 +71,8 @@ class UploadStore:
                 return None
             if now - entry.created_at > self._ttl:
                 self._entries.pop(upload_id, None)
-                _safe_remove(entry.hwpx_path)
+                _safe_close(entry.session)
                 return None
-            # Refresh LRU position.
             self._entries.move_to_end(upload_id)
             return entry
 
@@ -83,7 +80,7 @@ class UploadStore:
         with self._lock:
             entry = self._entries.pop(upload_id, None)
         if entry is not None:
-            _safe_remove(entry.hwpx_path)
+            _safe_close(entry.session)
 
     def __len__(self) -> int:
         with self._lock:
@@ -94,31 +91,27 @@ class UploadStore:
             entries = list(self._entries.values())
             self._entries.clear()
         for entry in entries:
-            _safe_remove(entry.hwpx_path)
+            _safe_close(entry.session)
 
     # ---- internals ----
 
     def _evict_locked(self) -> None:
-        # Evict expired first.
         now = time.time()
-        expired: list[str] = [
-            uid for uid, e in self._entries.items() if now - e.created_at > self._ttl
-        ]
+        expired = [uid for uid, e in self._entries.items() if now - e.created_at > self._ttl]
         for uid in expired:
             e = self._entries.pop(uid)
-            _safe_remove(e.hwpx_path)
-
-        # Then evict oldest until under capacity.
+            _safe_close(e.session)
         while len(self._entries) > self._capacity:
             _uid, e = self._entries.popitem(last=False)
-            _safe_remove(e.hwpx_path)
+            _safe_close(e.session)
 
 
-def _safe_remove(path: str) -> None:
+def _safe_close(session: Optional["DocumentSession"]) -> None:
+    if session is None:
+        return
     try:
-        os.remove(path)
-    except OSError:
-        # File might have been cleaned up externally or never existed.
+        session.close()
+    except Exception:  # noqa: BLE001 — cleanup must not raise
         pass
 
 
