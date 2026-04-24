@@ -1,18 +1,13 @@
 /**
- * HwpxViewer — M3R/M4R/M5R/M6R smoke viewer.
+ * HwpxViewer — M3R/M4R/M5R/M6R/M7R.
  *
- * Still a single-file smoke harness; the proper layout (Sidebar, ChatPanel,
- * HistoryPanel, FloatingDock) lands in M7R when we port the prototype. What
- * this file covers today:
- *   - upload .hwpx → page count (M4R)
- *   - render every page as rhwp SVG with fonts embedded (M3R)
- *   - drag-to-select text → indigo overlay via /api/hit-test + /api/selection-rects (M5R)
- *   - edit panel: replace selected text → /api/edit → re-render affected pages (M6R)
- *   - undo toggle per history entry → /api/undo (M6R)
- *   - download current HWPX bytes (M4R)
+ * M7R status: inline AI pipeline landed (InlineSelectionMenu → Claude rewrite
+ * → CherryPickDiff → /api/edit). ChatPanel / full HistoryPanel / layout
+ * shell (UserMenu, FloatingDock, StatusBar) still pending — tracked in
+ * do.md §M7R.
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   ApiError,
@@ -22,10 +17,17 @@ import {
   undoEdit,
   uploadHwpx,
 } from '@/api/document';
-import { EditPanel } from '@/components/viewer/EditPanel';
+import { ChatPanel } from '@/components/chat/ChatPanel';
 import { HistoryList } from '@/components/viewer/HistoryList';
 import { SvgPage } from '@/components/viewer/SvgPage';
+import { InlineSelectionMenu } from '@/components/inline/InlineSelectionMenu';
+import { InlineLoadingBlock } from '@/components/inline/InlineLoadingBlock';
+import { InlineErrorBlock } from '@/components/inline/InlineErrorBlock';
+import { InlineCherryPickDiff } from '@/components/inline/InlineCherryPickDiff';
+import { useInlineAi } from '@/hooks/useInlineAi';
 import { useSelection } from '@/hooks/useSelection';
+import { useViewerStore } from '@/state/store';
+import { MessageSquare } from 'lucide-react';
 import type { DocumentInfo, HistoryEntry } from '@/types';
 
 interface LoadedDoc {
@@ -41,6 +43,24 @@ function miniFrom(svg: string): string {
     .replace(/<svg\b/, '<svg preserveAspectRatio="xMidYMid meet" ');
 }
 
+/** Compute the client-space anchor (top-center) from the selection's first rect. */
+function anchorFromRect(
+  pageEl: HTMLElement | null,
+  _viewBox: string | null,
+  rect: { x: number; y: number; width: number } | undefined,
+): { x: number; y: number } | null {
+  if (!pageEl || !rect) return null;
+  const svgEl = pageEl.querySelector('svg');
+  if (!svgEl) return null;
+  const ctm = (svgEl as SVGSVGElement).getScreenCTM();
+  if (!ctm) return null;
+  const pt = (svgEl as SVGSVGElement).createSVGPoint();
+  pt.x = rect.x + rect.width / 2;
+  pt.y = rect.y;
+  const mapped = pt.matrixTransform(ctm);
+  return { x: mapped.x, y: mapped.y };
+}
+
 export default function App() {
   const [doc, setDoc] = useState<LoadedDoc | null>(null);
   const [busy, setBusy] = useState(false);
@@ -50,12 +70,40 @@ export default function App() {
   const [activePage, setActivePage] = useState(0);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [editBusy, setEditBusy] = useState(false);
-  const [editError, setEditError] = useState<string | null>(null);
   const [undoBusyId, setUndoBusyId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pageRefs = useRef<Record<number, HTMLElement | null>>({});
 
   const selection = useSelection(doc?.info.uploadId ?? null);
+
+  // ----- store bindings (inline AI pipeline + chat) -----
+  const inlineEditing = useViewerStore((s) => s.editing);
+  const inlineMenu = useViewerStore((s) => s.menu);
+  const openMenu = useViewerStore((s) => s.openMenu);
+  const closeMenu = useViewerStore((s) => s.closeMenu);
+  const setEditing = useViewerStore((s) => s.setEditing);
+  const chatOpen = useViewerStore((s) => s.chatOpen);
+  const toggleChat = useViewerStore((s) => s.toggleChat);
+  const setDocumentInStore = useViewerStore((s) => s.setDocument);
+  const clearDocumentInStore = useViewerStore((s) => s.clearDocument);
+
+  // Bridge useSelection -> inline menu anchor. When a selection becomes
+  // active (paragraph or range), pop the AI menu above the first rect.
+  useEffect(() => {
+    if (!selection.active || inlineEditing) {
+      closeMenu();
+      return;
+    }
+    const rect = selection.active.rects[0];
+    const anchor = anchorFromRect(pageRefs.current[selection.active.page] ?? null, null, rect);
+    if (anchor) openMenu(anchor);
+    else closeMenu();
+  }, [selection.active, inlineEditing, openMenu, closeMenu]);
+
+  const inlineTarget = selection.active
+    ? { selection: selection.active.selection, text: selection.active.text }
+    : null;
+  const inlineAi = useInlineAi(inlineTarget);
 
   const miniSvgs = useMemo(() => doc?.svgs.map(miniFrom) ?? [], [doc]);
 
@@ -74,22 +122,30 @@ export default function App() {
     [],
   );
 
-  const handleFile = useCallback(async (file: File) => {
-    setBusy(true);
-    setError(null);
-    setDoc(null);
-    setHistory([]);
-    selection.clear();
-    try {
-      const info = await uploadHwpx(file);
-      const svgs = await loadAllPages(info);
-      setDoc({ info, svgs });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }, [loadAllPages, selection]);
+  const handleFile = useCallback(
+    async (file: File) => {
+      setBusy(true);
+      setError(null);
+      setDoc(null);
+      setHistory([]);
+      selection.clear();
+      setEditing(null);
+      closeMenu();
+      try {
+        const info = await uploadHwpx(file);
+        const svgs = await loadAllPages(info);
+        setDoc({ info, svgs });
+        // Bridge to store so ChatPanel (and future layout pieces) can read
+        // the same DocumentInfo without prop drilling.
+        setDocumentInStore(info, svgs);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadAllPages, selection, setEditing, closeMenu, setDocumentInStore],
+  );
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -106,12 +162,11 @@ export default function App() {
     window.location.href = downloadUrl(doc.info.uploadId);
   }, [doc]);
 
-  // --- edit/undo pipeline -------------------------------------------------
+  // ----- edit/undo pipeline ------------------------------------------------
 
   const refreshAffectedPages = useCallback(
     async (info: DocumentInfo, pages: number[]) => {
       const next = [...(doc?.svgs ?? [])];
-      // De-duplicate; fetch each affected page in parallel.
       const unique = Array.from(new Set(pages)).filter((p) => p >= 0 && p < info.pageCount);
       const results = await Promise.all(
         unique.map(async (p) => [p, await fetchPageSvg(info.uploadId, p, info.version)] as const),
@@ -122,34 +177,136 @@ export default function App() {
     [doc],
   );
 
-  const onApplyEdit = useCallback(
-    async (newText: string) => {
-      if (!doc || !selection.active) return;
+  const acceptInlineEdit = useCallback(
+    async (finalText: string) => {
+      if (!doc || !selection.active || !inlineEditing) return;
       setEditBusy(true);
-      setEditError(null);
       try {
-        const result = await applyEdit(doc.info.uploadId, selection.active.selection, newText);
+        const result = await applyEdit(doc.info.uploadId, selection.active.selection, finalText);
+        const actionLabel =
+          inlineEditing.action === 'rewrite'
+            ? '다시 쓰기'
+            : inlineEditing.action === 'shorten'
+              ? '간결하게'
+              : '영어로';
         setHistory((prev) => [
           {
             id: result.editId,
             ts: Date.now(),
             selection: selection.active!.selection,
             oldText: selection.active!.text,
-            newText,
-            action: '수기 편집',
+            newText: finalText,
+            action: `AI: ${actionLabel}`,
             undone: false,
           },
           ...prev,
         ]);
         await refreshAffectedPages(result.document, result.affectedPages);
+        setEditing(null);
         selection.clear();
       } catch (e) {
-        setEditError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e));
+        const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
+        // Stay in the cherry-pick; surface the error via inline editor state.
+        useViewerStore.getState().setInlineError(msg);
       } finally {
         setEditBusy(false);
       }
     },
-    [doc, selection, refreshAffectedPages],
+    [doc, selection, inlineEditing, refreshAffectedPages, setEditing],
+  );
+
+  const rejectInlineEdit = useCallback(() => {
+    setEditing(null);
+  }, [setEditing]);
+
+  // ----- chat-embedded patch apply/undo --------------------------------------
+  const [busyPatchMsgIdx, setBusyPatchMsgIdx] = useState<number | null>(null);
+
+  const applyChatPatch = useCallback(
+    async (msgIdx: number) => {
+      if (!doc) return;
+      const msg = useViewerStore.getState().messages[msgIdx];
+      if (!msg?.editable) return;
+      const { selection: sel, original, suggestion } = msg.editable;
+      setBusyPatchMsgIdx(msgIdx);
+      try {
+        const result = await applyEdit(doc.info.uploadId, sel, suggestion);
+        setHistory((prev) => [
+          {
+            id: result.editId,
+            ts: Date.now(),
+            selection: sel,
+            oldText: original,
+            newText: suggestion,
+            action: 'AI: 채팅 제안',
+            undone: false,
+          },
+          ...prev,
+        ]);
+        await refreshAffectedPages(result.document, result.affectedPages);
+        useViewerStore.getState().patchMessageEditable(msgIdx, {
+          appliedEditId: result.editId,
+          error: undefined,
+        });
+      } catch (e) {
+        const em = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
+        useViewerStore.getState().patchMessageEditable(msgIdx, { error: em });
+      } finally {
+        setBusyPatchMsgIdx(null);
+      }
+    },
+    [doc, refreshAffectedPages],
+  );
+
+  const undoChatPatch = useCallback(
+    async (msgIdx: number) => {
+      if (!doc) return;
+      const msg = useViewerStore.getState().messages[msgIdx];
+      const editId = msg?.editable?.appliedEditId;
+      if (!editId) return;
+      setBusyPatchMsgIdx(msgIdx);
+      try {
+        const result = await undoEdit(doc.info.uploadId, editId);
+        setHistory((prev) =>
+          prev.map((e) => (e.id === editId ? { ...e, undone: !e.undone } : e)),
+        );
+        await refreshAffectedPages(result.document, result.affectedPages);
+        useViewerStore
+          .getState()
+          .patchMessageEditable(msgIdx, { appliedEditId: undefined, error: undefined });
+      } catch (e) {
+        const em = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
+        useViewerStore.getState().patchMessageEditable(msgIdx, { error: em });
+      } finally {
+        setBusyPatchMsgIdx(null);
+      }
+    },
+    [doc, refreshAffectedPages],
+  );
+
+  const rejectChatPatch = useCallback(
+    (msgIdx: number) => {
+      // Drop the patch attachment from the message — bubble becomes pure text.
+      useViewerStore.getState().patchMessageEditable(msgIdx, { error: undefined });
+      // Also drop the editable field altogether; there's no dedicated setter,
+      // so we overwrite the message via updateLastAssistant (if last) or
+      // directly via the store in a small local helper.
+      const state = useViewerStore.getState();
+      const msg = state.messages[msgIdx];
+      if (msg) {
+        // Rewrite the message in-place: copy out editable, reassemble.
+        useViewerStore.setState((prev) => {
+          const next = { ...prev, messages: prev.messages.slice() };
+          const m = next.messages[msgIdx];
+          if (m) {
+            const { editable: _drop, ...rest } = m;
+            next.messages[msgIdx] = rest;
+          }
+          return next;
+        });
+      }
+    },
+    [],
   );
 
   const onToggleHistory = useCallback(
@@ -162,18 +319,15 @@ export default function App() {
           prev.map((e) => (e.id === editId ? { ...e, undone: !e.undone } : e)),
         );
         await refreshAffectedPages(result.document, result.affectedPages);
-        // The selection range may no longer match original text; refresh it.
         await selection.refresh();
       } catch (e) {
-        setEditError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e));
+        setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e));
       } finally {
         setUndoBusyId(null);
       }
     },
     [doc, refreshAffectedPages, selection],
   );
-
-  // ----------------------------------------------------------------------
 
   return (
     <main className="h-screen bg-bg text-text flex flex-col overflow-hidden">
@@ -191,7 +345,7 @@ export default function App() {
           <div>
             <h1 className="text-sm font-semibold text-text-strong">HWPX Viewer</h1>
             <p className="text-[11px] text-text-subtle">
-              클릭 = 문단 선택 · Shift+드래그 = 범위 선택 · 편집 · 되돌리기
+              클릭 = 문단 · Shift+드래그 = 범위 · AI 메뉴로 재작성 · undo
             </p>
           </div>
         </div>
@@ -208,11 +362,24 @@ export default function App() {
               다운로드
             </button>
             <button
+              onClick={toggleChat}
+              title="AI 대화"
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md border text-xs ${
+                chatOpen ? 'border-accent text-accent' : 'border-border text-text-muted hover:bg-bg-muted'
+              }`}
+            >
+              <MessageSquare size={12} />
+              AI
+            </button>
+            <button
               onClick={() => {
                 setDoc(null);
                 setError(null);
                 setHistory([]);
                 selection.clear();
+                setEditing(null);
+                closeMenu();
+                clearDocumentInStore();
               }}
               className="px-3 py-1 rounded-md border border-border hover:bg-bg-muted"
             >
@@ -243,7 +410,7 @@ export default function App() {
               .hwpx 파일을 여기에 놓거나 클릭하세요
             </div>
             <div className="text-xs text-text-muted mb-6">
-              rhwp WASM이 서버에서 SVG로 렌더링하고, 드래그로 텍스트를 선택해 편집할 수 있습니다.
+              rhwp WASM이 서버에서 SVG로 렌더링하고, 드래그로 텍스트를 선택해 AI와 편집할 수 있습니다.
             </div>
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -345,20 +512,70 @@ export default function App() {
                 {selection.error}
               </div>
             )}
-            {selection.active && (
-              <EditPanel
-                text={selection.active.text}
-                mode={selection.active.mode}
-                busy={editBusy}
-                error={editError}
-                onApply={onApplyEdit}
-                onCancel={() => {
+
+            {/* Inline AI menu — shown only while a selection exists AND no
+                inline editing is in progress. */}
+            {inlineMenu && !inlineEditing && (
+              <InlineSelectionMenu
+                anchor={inlineMenu}
+                onAction={(id, guide) => void inlineAi.begin(id, guide)}
+                onAttachToChat={() => {
+                  if (selection.active) {
+                    useViewerStore
+                      .getState()
+                      .setAttachment(selection.active.text, selection.active.selection);
+                    if (!useViewerStore.getState().chatOpen) {
+                      useViewerStore.getState().toggleChat();
+                    }
+                  }
+                  closeMenu();
                   selection.clear();
-                  setEditError(null);
+                }}
+                onClose={() => {
+                  closeMenu();
+                  selection.clear();
                 }}
               />
             )}
+
+            {/* Inline editing overlay (loading / error / cherry-pick). */}
+            {inlineEditing && (
+              <div className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[min(720px,92vw)] z-20">
+                {inlineEditing.status === 'loading' && (
+                  <InlineLoadingBlock originalText={inlineEditing.original} />
+                )}
+                {inlineEditing.status === 'error' && (
+                  <InlineErrorBlock
+                    error={inlineEditing.error}
+                    onClose={() => setEditing(null)}
+                  />
+                )}
+                {inlineEditing.status === 'ready' && (
+                  <InlineCherryPickDiff
+                    original={inlineEditing.original}
+                    suggestion={inlineEditing.suggestion}
+                    busy={editBusy}
+                    onAccept={(finalText) => void acceptInlineEdit(finalText)}
+                    onReject={rejectInlineEdit}
+                  />
+                )}
+              </div>
+            )}
           </section>
+
+          {/* AI conversation panel — slides in from the right. */}
+          <aside
+            className={`${chatOpen ? 'w-[420px]' : 'w-0'} flex-shrink-0 overflow-hidden transition-[width] duration-200`}
+          >
+            {chatOpen && (
+              <ChatPanel
+                busyPatchMsgIdx={busyPatchMsgIdx}
+                onApplyPatch={(i) => void applyChatPatch(i)}
+                onUndoPatch={(i) => void undoChatPatch(i)}
+                onRejectPatch={rejectChatPatch}
+              />
+            )}
+          </aside>
         </div>
       )}
     </main>

@@ -85,7 +85,22 @@ export async function callClaudeOnce(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ system, prompt: userPrompt }),
   });
-  if (!response.ok) throw new Error(`API error: ${response.status}`);
+  if (!response.ok) {
+    // Surface the backend's error.detail.error.message when available so the
+    // inline error block shows the real cause (Claude CLI missing, OAuth
+    // expired, rate limit, etc.) instead of a bare HTTP status.
+    let detail = '';
+    try {
+      const body = (await response.json()) as {
+        detail?: { error?: { code?: string; message?: string } };
+      };
+      const err = body?.detail?.error;
+      if (err?.message) detail = `${err.code ?? 'ERROR'}: ${err.message}`;
+    } catch {
+      detail = await response.text().catch(() => '');
+    }
+    throw new Error(detail || `API error: ${response.status}`);
+  }
   const data = (await response.json()) as { text: string };
   return data.text;
 }

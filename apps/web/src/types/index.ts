@@ -140,14 +140,35 @@ export interface Edit {
 }
 
 // ============================================================
-//  Chat messages (M7R — unchanged from prototype)
+//  Chat messages (M7R)
 // ============================================================
+
+/**
+ * A Claude-proposed inline edit embedded inside a chat message. Populated
+ * when the user chats **with an attached selection** — ``useStreamChat``
+ * routes the turn through the inline-editor prompt and the assistant bubble
+ * renders a diff + [적용] button. See ``components/chat/ChatMessage.tsx``.
+ */
+export interface EditablePatch {
+  selection: Selection;
+  original: string;
+  suggestion: string;
+  /** Once applied, the assigned ``editId`` from /api/edit — used so undo
+   *  toggles the patch card and the sidebar history entry in sync. */
+  appliedEditId?: number;
+  /** Server-reported error from the apply step. */
+  error?: string;
+}
 
 export interface Message {
   role: 'user' | 'assistant';
   text: string;
   content?: string;
   edits?: Edit[];
+  /** When the message originated from an attached-selection chat turn,
+   *  this carries the AI's suggestion and the target selection so the
+   *  in-bubble [적용] button can reach ``/api/edit``. */
+  editable?: EditablePatch;
   ui?: 'static' | 'inline';
   isError?: boolean;
 }
