@@ -76,13 +76,27 @@ export interface DocumentInfo {
 // ============================================================
 
 /**
+ * Pointer to a table cell. When a ``RunLocation`` has ``cell`` set, the
+ * ``para`` field is interpreted as ``cellParaIndex`` (paragraph index
+ * *inside the cell*), and edits are routed to rhwp's ``*InCell`` WASM
+ * exports server-side.
+ */
+export interface CellRef {
+  parentParaIndex: number;
+  controlIndex: number;
+  cellIndex: number;
+}
+
+/**
  * A single point inside the document. Matches the rhwp WASM edit-API
- * signature ``(section_idx, para_idx, char_offset)``.
+ * signature ``(section_idx, para_idx, char_offset)`` for body text, plus an
+ * optional ``cell`` context for clicks that land inside a table cell.
  */
 export interface RunLocation {
   sec: number;
   para: number;
   charOffset: number;
+  cell?: CellRef | null;
 }
 
 /** A contiguous text range. */
