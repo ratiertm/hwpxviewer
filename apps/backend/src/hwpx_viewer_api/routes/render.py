@@ -52,9 +52,9 @@ async def render_page(upload_id: str, page: int) -> Response:
         )
 
     try:
-        # embed_fonts=False — rely on browser's CSS font-family fallback chain
-        # (Noto Sans/Serif KR / Apple SD Gothic Neo / Malgun Gothic).
-        svg = entry.session.render_page_svg(page, embed_fonts=False)
+        # embed_fonts=True — Korean fonts are embedded (base64 subset) so the
+        # SVG renders identically everywhere. Users must never see tofu.
+        svg = entry.session.render_page_svg(page, embed_fonts=True)
     except Exception as e:  # noqa: BLE001
         logger.exception("render.failed", extra={"upload_id": upload_id, "page": page})
         raise HTTPException(

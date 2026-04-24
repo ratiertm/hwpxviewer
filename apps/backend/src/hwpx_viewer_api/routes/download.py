@@ -40,9 +40,9 @@ async def download(upload_id: str) -> Response:
         )
 
     try:
-        data = entry.session.export_hwp_bytes()
+        data = entry.session.save_hwpx_bytes()
     except Exception as e:  # noqa: BLE001
-        logger.exception("download.export_failed", extra={"upload_id": upload_id})
+        logger.exception("download.save_failed", extra={"upload_id": upload_id})
         raise HTTPException(
             status_code=500,
             detail={
@@ -55,17 +55,13 @@ async def download(upload_id: str) -> Response:
             },
         ) from e
 
-    # Temporary: we export HWP 5.x until M4R adds true HWPX round-trip.
     stem = entry.file_name.rsplit(".", 1)[0] or "document"
-    out_name = f"{stem} (수정본).hwp"
+    out_name = f"{stem} (수정본).hwpx"
     quoted = urllib.parse.quote(out_name)
 
     return Response(
         content=data,
-        media_type="application/x-hwp",
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
-            "X-HwpxViewer-Format": "hwp-5-temporary",  # surfaces M3R limitation
-        },
+        media_type="application/vnd.hancom.hwpx",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
     )
 

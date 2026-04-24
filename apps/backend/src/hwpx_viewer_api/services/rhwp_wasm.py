@@ -64,9 +64,17 @@ class _BackedEngine:
     # ----- factory -------------------------------------------------------
 
     def load_document_bytes(self, data: bytes, *, name: str) -> "DocumentSession":
+        """Load HWPX bytes into the rhwp engine and keep the original bytes.
+
+        The original HWPX is retained so ``save_hwpx_bytes`` can return a
+        real .hwpx (not HWP 5.x). When the edit pipeline lands in M6R this
+        is extended by a parallel ``pyhwpxlib.json_io`` IR so edits apply
+        to both the rhwp in-memory document (for re-rendering) and the
+        JSON tree (for ``HwpxBuilder`` re-emit).
+        """
         with self._lock:
             doc = self._inner.load_bytes(data, name=name)
-        return DocumentSession(self, doc, name=name)
+        return DocumentSession(self, doc, name=name, original_bytes=data)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +85,14 @@ class _BackedEngine:
 class DocumentSession:
     """One loaded HWPX. Operations are serialized via the shared engine lock."""
 
-    def __init__(self, engine: _BackedEngine, doc: Any, *, name: str) -> None:
+    def __init__(
+        self,
+        engine: _BackedEngine,
+        doc: Any,
+        *,
+        name: str,
+        original_bytes: bytes,
+    ) -> None:
         self._engine = engine
         self._doc = doc           # pyhwpxlib.rhwp_bridge.RhwpDocument
         self._exports = doc._engine._exports
@@ -87,6 +102,12 @@ class DocumentSession:
         self.name = name
         self.version = 0
         self._closed = False
+        # Original HWPX bytes — returned by save_hwpx_bytes until edit-aware
+        # JSON round-trip lands in M6R.
+        self._original_bytes = original_bytes
+        # M6R will populate this with ``pyhwpxlib.json_io.to_json`` output so
+        # edits can be re-emitted via ``HwpxBuilder`` / ``json_io.from_json``.
+        self._json_ir: Optional[dict[str, Any]] = None
 
     # ----- pure-read API --------------------------------------------------
 
@@ -95,16 +116,27 @@ class DocumentSession:
         with self._engine._lock:
             return int(self._doc.page_count)
 
-    def render_page_svg(self, page: int, *, embed_fonts: bool = False) -> str:
-        """Render one page to SVG. Thread-safe via engine lock.
+    def render_page_svg(self, page: int, *, embed_fonts: bool = True) -> str:
+        """Render one page to SVG with Korean fonts embedded by default.
 
-        ``embed_fonts=False`` keeps the SVG small and defers font resolution to
-        the browser's own fallback chain (the CSS ``font-family`` list rhwp
-        emits already covers Korean defaults for macOS/Windows). Flip to
-        ``True`` for fully self-contained SVGs at the cost of ~hundreds of KB.
+        Fonts are **always** embedded (base64 subset) so the SVG renders
+        identically across every browser, container, and offline environment —
+        Korean users must never see tofu glyphs. Pass ``embed_fonts=False``
+        only for debug / size-profiling.
         """
         with self._engine._lock:
             return self._doc.render_page_svg(page, embed_fonts=embed_fonts)
+
+    # ----- save / round-trip --------------------------------------------
+
+    def save_hwpx_bytes(self) -> bytes:
+        """Return the current document state as HWPX bytes.
+
+        M3R: returns the original uploaded bytes (no edits applied yet).
+        M6R will swap this for ``pyhwpxlib.json_io.from_json(self._json_ir)``
+        which emits a fresh HWPX through ``HwpxBuilder``.
+        """
+        return self._original_bytes
 
     # ----- edit / hit-test API (direct WASM exports) ----------------------
 
