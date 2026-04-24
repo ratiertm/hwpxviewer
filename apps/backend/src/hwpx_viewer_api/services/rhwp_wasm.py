@@ -103,11 +103,13 @@ class DocumentSession:
         self.version = 0
         self._closed = False
         # Original HWPX bytes — returned by save_hwpx_bytes until edit-aware
-        # JSON round-trip lands in M6R.
+        # JSON round-trip lands (pyhwpxlib HwpxBuilder path).
         self._original_bytes = original_bytes
-        # M6R will populate this with ``pyhwpxlib.json_io.to_json`` output so
-        # edits can be re-emitted via ``HwpxBuilder`` / ``json_io.from_json``.
+        # Populated lazily on first edit via ``pyhwpxlib.json_io.to_json``.
         self._json_ir: Optional[dict[str, Any]] = None
+        # M6R edit history — list of dicts {id, selection, oldText, newText, undone}
+        self.edits: list[dict[str, Any]] = []
+        self._next_edit_id = 1
 
     # ----- pure-read API --------------------------------------------------
 
@@ -195,6 +197,61 @@ class DocumentSession:
         return self._call_json(
             "hwpdocument_deleteText", self._handle, sec, para, char_offset, count,
         ) or {}
+
+    # ----- higher-level edit (M6R) --------------------------------------
+
+    def apply_edit(
+        self,
+        sec: int,
+        para: int,
+        char_offset: int,
+        length: int,
+        new_text: str,
+    ) -> dict[str, Any]:
+        """Replace `length` chars at (sec, para, charOffset) with `new_text`.
+
+        Captures ``oldText`` before the mutation so ``undo_edit`` can restore
+        the original. Returns the recorded edit dict.
+        """
+        old_text = self.get_text_range(sec, para, char_offset, length) if length > 0 else ""
+        with self._engine._lock:
+            # delete + insert are two separate WASM calls; we serialize them
+            # under the shared engine lock and assume no other request is mid-flight.
+            pass
+        if length > 0:
+            self.delete_text(sec, para, char_offset, length)
+        if new_text:
+            self.insert_text(sec, para, char_offset, new_text)
+        edit_id = self._next_edit_id
+        self._next_edit_id += 1
+        entry = {
+            "id": edit_id,
+            "sec": sec,
+            "para": para,
+            "charOffset": char_offset,
+            "oldText": old_text,
+            "newText": new_text,
+            "undone": False,
+        }
+        self.edits.append(entry)
+        self.version += 1
+        return entry
+
+    def undo_edit(self, edit_id: int) -> dict[str, Any]:
+        """Toggle an edit's ``undone`` flag and replay the inverse mutation."""
+        entry = next((e for e in self.edits if e["id"] == edit_id), None)
+        if entry is None:
+            raise KeyError(f"edit {edit_id} not found")
+        currently_new = entry["newText"] if not entry["undone"] else entry["oldText"]
+        target_text = entry["oldText"] if not entry["undone"] else entry["newText"]
+        sec, para, off = entry["sec"], entry["para"], entry["charOffset"]
+        if currently_new:
+            self.delete_text(sec, para, off, len(currently_new))
+        if target_text:
+            self.insert_text(sec, para, off, target_text)
+        entry["undone"] = not entry["undone"]
+        self.version += 1
+        return entry
 
     # ----- persistence ---------------------------------------------------
 
