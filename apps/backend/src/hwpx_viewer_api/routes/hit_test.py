@@ -17,8 +17,11 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import (
+    CellRef,
     HitTestRequest,
     HitTestResponse,
+    ParagraphRequest,
+    ParagraphResponse,
     RunLocation,
     SelectionRect,
     SelectionRectsRequest,
@@ -26,6 +29,18 @@ from ..schemas import (
     TextRangeRequest,
     TextRangeResponse,
 )
+
+
+def _cell_dict(selection_or_cell) -> dict | None:
+    """Extract CellRef as plain dict for rhwp_wasm (which takes optional dict)."""
+    cell = getattr(selection_or_cell, "cell", None) if selection_or_cell is not None else None
+    if cell is None:
+        return None
+    return {
+        "parentParaIndex": cell.parentParaIndex,
+        "controlIndex": cell.controlIndex,
+        "cellIndex": cell.cellIndex,
+    }
 from ..services.upload_store import get_upload_store
 
 logger = logging.getLogger(__name__)
@@ -66,11 +81,14 @@ async def hit_test(req: HitTestRequest) -> HitTestResponse:
         }}) from e
     if loc is None:
         return HitTestResponse(location=None)
+    cell_dict = loc.get("cell")
+    cell_ref = CellRef(**cell_dict) if cell_dict else None
     return HitTestResponse(
         location=RunLocation(
             sec=int(loc["sec"]),
             para=int(loc["para"]),
             charOffset=int(loc["charOffset"]),
+            cell=cell_ref,
         )
     )
 
@@ -90,6 +108,7 @@ async def selection_rects(req: SelectionRectsRequest) -> SelectionRectsResponse:
             # chaining multiple Selection calls from the client).
             end_para=start.para,
             end_char_offset=end_offset,
+            cell=_cell_dict(start),
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("selection_rects.failed", extra={"upload_id": req.uploadId})
@@ -114,6 +133,38 @@ async def selection_rects(req: SelectionRectsRequest) -> SelectionRectsResponse:
     )
 
 
+@router.post("/api/paragraph", response_model=ParagraphResponse)
+async def paragraph(req: ParagraphRequest) -> ParagraphResponse:
+    """Whole-paragraph info for click-to-select.
+
+    Returns ``length`` (character count) + ``text`` (the full paragraph body).
+    The client combines a single hit-test ``(sec, para, _)`` with this to build
+    a ``Selection { start: {sec, para, charOffset: 0}, length }`` that spans
+    the whole paragraph — used by default-click selection in v0.3.
+    """
+    session = _session_or_404(req.uploadId)
+    cell = _cell_dict(req)
+    try:
+        length = session.get_paragraph_length(req.sec, req.para, cell=cell)
+        text = (
+            session.get_text_range(req.sec, req.para, 0, length, cell=cell)
+            if length > 0
+            else ""
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "paragraph.failed",
+            extra={"upload_id": req.uploadId, "sec": req.sec, "para": req.para},
+        )
+        raise HTTPException(status_code=500, detail={"error": {
+            "code": "CONVERTER_ERROR",
+            "message": "문단 조회에 실패했습니다.",
+            "detail": str(e)[:500],
+            "recoverable": False,
+        }}) from e
+    return ParagraphResponse(length=length, text=text)
+
+
 @router.post("/api/text-range", response_model=TextRangeResponse)
 async def text_range(req: TextRangeRequest) -> TextRangeResponse:
     session = _session_or_404(req.uploadId)
@@ -124,6 +175,7 @@ async def text_range(req: TextRangeRequest) -> TextRangeResponse:
             para=start.para,
             char_offset=start.charOffset,
             count=req.selection.length,
+            cell=_cell_dict(start),
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("text_range.failed", extra={"upload_id": req.uploadId})

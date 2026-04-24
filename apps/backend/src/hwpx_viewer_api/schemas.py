@@ -89,17 +89,37 @@ class UploadResponse(BaseModel):
 # ============================================================
 
 
+class CellRef(BaseModel):
+    """Pointer to a single table cell within a section.
+
+    rhwp addresses table cell text as
+    ``(sec, parentParaIndex, controlIndex, cellIndex, cellParaIndex, offset)``.
+    When a RunLocation has ``cell`` set, its ``para`` field is interpreted
+    as ``cellParaIndex`` (the paragraph index **inside the cell**) instead
+    of the section paragraph index.
+    """
+    parentParaIndex: int = Field(ge=0)
+    controlIndex: int = Field(ge=0)
+    cellIndex: int = Field(ge=0)
+
+
 class RunLocation(BaseModel):
     """A single point inside the document.
 
     ``sec`` — section index (0-based)
-    ``para`` — paragraph index within the section (0-based)
-    ``charOffset`` — character offset within the paragraph's concatenated text
+    ``para`` — paragraph index. When ``cell`` is None this is a section
+      paragraph; otherwise it is the cell-local paragraph index
+      (``cellParaIndex``).
+    ``charOffset`` — character offset within that paragraph.
+    ``cell`` — table-cell context. When set, edits go through rhwp's
+      ``*InCell`` WASM exports; when None, the normal body-text exports
+      are used.
     """
 
     sec: int = Field(ge=0)
     para: int = Field(ge=0)
     charOffset: int = Field(ge=0)
+    cell: CellRef | None = None
 
 
 class Selection(BaseModel):
@@ -177,4 +197,25 @@ class TextRangeRequest(BaseModel):
 
 
 class TextRangeResponse(BaseModel):
+    text: str
+
+
+# ============================================================
+#  Paragraph info (M5R click-to-select) — whole-paragraph selection
+# ============================================================
+
+
+class ParagraphRequest(BaseModel):
+    uploadId: str
+    sec: int = Field(ge=0)
+    para: int = Field(ge=0)
+    cell: CellRef | None = None   # when set, ``para`` is cellParaIndex
+
+
+class ParagraphResponse(BaseModel):
+    """Length + text of a whole paragraph. Drives click-to-select: a single
+    hit-test gives (sec, para), then this endpoint returns the full run so the
+    UI can highlight the entire paragraph.
+    """
+    length: int
     text: str

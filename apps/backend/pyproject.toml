@@ -18,6 +18,8 @@ dependencies = [
     # [preview] extras pulls in wasmtime + bundles the rhwp WebAssembly binary
     # at pyhwpxlib/vendor/rhwp_bg.wasm — see Design v0.3 §5.
     "pyhwpxlib[preview]>=0.11.0",
+    # Surgical XML patching for /api/download — see services/hwpx_patcher.py.
+    "lxml>=5.0",
 ]
 
 [dependency-groups]

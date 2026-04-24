@@ -134,11 +134,22 @@ class DocumentSession:
     def save_hwpx_bytes(self) -> bytes:
         """Return the current document state as HWPX bytes.
 
-        M3R: returns the original uploaded bytes (no edits applied yet).
-        M6R will swap this for ``pyhwpxlib.json_io.from_json(self._json_ir)``
-        which emits a fresh HWPX through ``HwpxBuilder``.
+        Strategy: replay the non-undone edit log directly against the
+        original HWPX XML (see ``services/hwpx_patcher.py``). This preserves
+        every unedited byte — embedded images, custom metadata, font tables,
+        namespace declarations — and only modifies the ``<hp:t>`` text values
+        inside the runs that were actually edited.
+
+        Design v0.3 note: we intentionally avoid the previous
+        rhwp → HWP 5.x → hwp2hwpx round-trip, which lost HWPX-only metadata.
+        rhwp remains the source of truth for *rendering*; the patcher owns
+        *persistence*.
         """
-        return self._original_bytes
+        effective = [e for e in self.edits if not e["undone"]]
+        if not effective:
+            return self._original_bytes
+        from .hwpx_patcher import apply_edits_to_hwpx
+        return apply_edits_to_hwpx(self._original_bytes, self.edits)
 
     # ----- edit / hit-test API (direct WASM exports) ----------------------
 
@@ -160,14 +171,73 @@ class DocumentSession:
         para: int,
         char_offset: int,
         count: int,
+        cell: Optional[dict[str, int]] = None,
     ) -> str:
-        """Return the substring at (sec, para, charOffset) of length count."""
-        result = self._call_json(
-            "hwpdocument_getTextRange", self._handle, sec, para, char_offset, count,
-        )
+        """Return the substring at (sec, para, charOffset) of length count.
+
+        When ``cell`` is provided the call is routed to
+        ``hwpdocument_getTextInCell`` with ``(parentParaIndex, controlIndex,
+        cellIndex, cellParaIndex=para)`` — rhwp's dedicated export for
+        table-cell text.
+        """
+        if cell is not None:
+            result = self._call_json(
+                "hwpdocument_getTextInCell",
+                self._handle,
+                sec,
+                int(cell["parentParaIndex"]),
+                int(cell["controlIndex"]),
+                int(cell["cellIndex"]),
+                para,
+                char_offset,
+                count,
+            )
+        else:
+            result = self._call_json(
+                "hwpdocument_getTextRange", self._handle, sec, para, char_offset, count,
+            )
         if isinstance(result, dict):
             return str(result.get("text", ""))
         return str(result or "")
+
+    def get_paragraph_length(
+        self,
+        sec: int,
+        para: int,
+        cell: Optional[dict[str, int]] = None,
+    ) -> int:
+        """Return the character length of a paragraph — used by click-to-select
+        to expand a single hit-test into a paragraph-wide Selection.
+
+        For table cells, routes to ``hwpdocument_getCellParagraphLength`` with
+        ``(parentParaIndex, controlIndex, cellIndex, cellParaIndex=para)``.
+        """
+        if cell is not None:
+            export_name = "hwpdocument_getCellParagraphLength"
+            export = self._exports.get(export_name)
+            if export is None:
+                raise RuntimeError(f"rhwp WASM export missing: {export_name}")
+            with self._engine._lock:
+                ret = export(
+                    self._store,
+                    self._handle,
+                    sec,
+                    int(cell["parentParaIndex"]),
+                    int(cell["controlIndex"]),
+                    int(cell["cellIndex"]),
+                    para,
+                )
+        else:
+            export = self._exports.get("hwpdocument_getParagraphLength")
+            if export is None:
+                raise RuntimeError("rhwp WASM export missing: hwpdocument_getParagraphLength")
+            with self._engine._lock:
+                ret = export(self._store, self._handle, sec, para)
+        # Export returns u32 directly (wasm_bindgen throws on the Err side,
+        # so success is a bare int).
+        if isinstance(ret, (tuple, list)):
+            return int(ret[0])
+        return int(ret)
 
     def get_selection_rects(
         self,
@@ -176,24 +246,82 @@ class DocumentSession:
         start_char_offset: int,
         end_para: int,
         end_char_offset: int,
+        cell: Optional[dict[str, int]] = None,
     ) -> list[dict[str, float]]:
-        """Return pixel rectangles covering a selection. One rect per visual line."""
-        result = self._call_json(
-            "hwpdocument_getSelectionRects",
-            self._handle, sec, start_para, start_char_offset, end_para, end_char_offset,
-        )
+        """Return pixel rectangles covering a selection. One rect per visual line.
+
+        When ``cell`` is present, routes to
+        ``hwpdocument_getSelectionRectsInCell`` — the cell-para indices are
+        passed through ``start_para`` / ``end_para``.
+        """
+        if cell is not None:
+            result = self._call_json(
+                "hwpdocument_getSelectionRectsInCell",
+                self._handle,
+                sec,
+                int(cell["parentParaIndex"]),
+                int(cell["controlIndex"]),
+                int(cell["cellIndex"]),
+                start_para,
+                start_char_offset,
+                end_para,
+                end_char_offset,
+            )
+        else:
+            result = self._call_json(
+                "hwpdocument_getSelectionRects",
+                self._handle, sec, start_para, start_char_offset, end_para, end_char_offset,
+            )
         if isinstance(result, list):
             return [_normalize_rect(r) for r in result]
         return []
 
-    def insert_text(self, sec: int, para: int, char_offset: int, text: str) -> dict[str, Any]:
+    def insert_text(
+        self,
+        sec: int,
+        para: int,
+        char_offset: int,
+        text: str,
+        cell: Optional[dict[str, int]] = None,
+    ) -> dict[str, Any]:
         """Insert ``text`` at (sec, para, charOffset). Returns rhwp ack JSON."""
+        if cell is not None:
+            return self._call_json_with_string(
+                "hwpdocument_insertTextInCell",
+                text,
+                self._handle,
+                sec,
+                int(cell["parentParaIndex"]),
+                int(cell["controlIndex"]),
+                int(cell["cellIndex"]),
+                para,
+                char_offset,
+            ) or {}
         return self._call_json_with_string(
             "hwpdocument_insertText", text, self._handle, sec, para, char_offset,
         ) or {}
 
-    def delete_text(self, sec: int, para: int, char_offset: int, count: int) -> dict[str, Any]:
+    def delete_text(
+        self,
+        sec: int,
+        para: int,
+        char_offset: int,
+        count: int,
+        cell: Optional[dict[str, int]] = None,
+    ) -> dict[str, Any]:
         """Delete ``count`` chars starting at (sec, para, charOffset)."""
+        if cell is not None:
+            return self._call_json(
+                "hwpdocument_deleteTextInCell",
+                self._handle,
+                sec,
+                int(cell["parentParaIndex"]),
+                int(cell["controlIndex"]),
+                int(cell["cellIndex"]),
+                para,
+                char_offset,
+                count,
+            ) or {}
         return self._call_json(
             "hwpdocument_deleteText", self._handle, sec, para, char_offset, count,
         ) or {}
@@ -207,21 +335,24 @@ class DocumentSession:
         char_offset: int,
         length: int,
         new_text: str,
+        cell: Optional[dict[str, int]] = None,
     ) -> dict[str, Any]:
         """Replace `length` chars at (sec, para, charOffset) with `new_text`.
+
+        When ``cell`` is provided all three WASM calls (get_text_range,
+        delete_text, insert_text) route to their ``*InCell`` variants so
+        the edit lands inside a table cell.
 
         Captures ``oldText`` before the mutation so ``undo_edit`` can restore
         the original. Returns the recorded edit dict.
         """
-        old_text = self.get_text_range(sec, para, char_offset, length) if length > 0 else ""
-        with self._engine._lock:
-            # delete + insert are two separate WASM calls; we serialize them
-            # under the shared engine lock and assume no other request is mid-flight.
-            pass
+        old_text = (
+            self.get_text_range(sec, para, char_offset, length, cell=cell) if length > 0 else ""
+        )
         if length > 0:
-            self.delete_text(sec, para, char_offset, length)
+            self.delete_text(sec, para, char_offset, length, cell=cell)
         if new_text:
-            self.insert_text(sec, para, char_offset, new_text)
+            self.insert_text(sec, para, char_offset, new_text, cell=cell)
         edit_id = self._next_edit_id
         self._next_edit_id += 1
         entry = {
@@ -232,6 +363,7 @@ class DocumentSession:
             "oldText": old_text,
             "newText": new_text,
             "undone": False,
+            "cell": cell,   # preserve cell ref so undo can route identically
         }
         self.edits.append(entry)
         self.version += 1
@@ -245,10 +377,11 @@ class DocumentSession:
         currently_new = entry["newText"] if not entry["undone"] else entry["oldText"]
         target_text = entry["oldText"] if not entry["undone"] else entry["newText"]
         sec, para, off = entry["sec"], entry["para"], entry["charOffset"]
+        cell = entry.get("cell")
         if currently_new:
-            self.delete_text(sec, para, off, len(currently_new))
+            self.delete_text(sec, para, off, len(currently_new), cell=cell)
         if target_text:
-            self.insert_text(sec, para, off, target_text)
+            self.insert_text(sec, para, off, target_text, cell=cell)
         entry["undone"] = not entry["undone"]
         self.version += 1
         return entry
@@ -365,17 +498,38 @@ def _parse_json_maybe(text: str) -> Any:
     return s
 
 
-def _normalize_location(d: dict[str, Any]) -> dict[str, int]:
-    """rhwp key variants → {sec, para, charOffset}."""
+def _normalize_location(d: dict[str, Any]) -> dict[str, Any]:
+    """rhwp key variants → {sec, para, charOffset, cell?}.
+
+    When the hit lands inside a table cell, rhwp's ``hitTest`` returns
+    additional fields ``parentParaIndex``, ``controlIndex``, ``cellIndex``,
+    ``cellParaIndex``. We collapse those into a nested ``cell`` block and
+    use ``cellParaIndex`` as the ``para`` field so downstream code treats
+    ``(sec, para, charOffset)`` uniformly — ``cell`` presence then tells
+    it which rhwp exports to call.
+    """
     sec = d.get("sec")
     if sec is None:
         sec = d.get("sectionIndex", d.get("section", 0))
-    para = d.get("para")
-    if para is None:
-        para = d.get("paraIndex", d.get("paragraphIndex", 0))
     off = d.get("charOffset")
     if off is None:
         off = d.get("offset", d.get("charPos", 0))
+
+    # Cell-local hit? rhwp only emits these fields when the hit is in a cell.
+    if "cellIndex" in d or "cellParaIndex" in d:
+        cell = {
+            "parentParaIndex": int(d.get("parentParaIndex", 0)),
+            "controlIndex": int(d.get("controlIndex", 0)),
+            "cellIndex": int(d.get("cellIndex", 0)),
+        }
+        # Inside-cell hit: prefer cellParaIndex as ``para`` so the caller can
+        # stay in the flat (sec, para, off) vocabulary.
+        para = int(d.get("cellParaIndex", 0))
+        return {"sec": int(sec), "para": para, "charOffset": int(off), "cell": cell}
+
+    para = d.get("para")
+    if para is None:
+        para = d.get("paraIndex", d.get("paragraphIndex", 0))
     return {"sec": int(sec), "para": int(para), "charOffset": int(off)}
 
 

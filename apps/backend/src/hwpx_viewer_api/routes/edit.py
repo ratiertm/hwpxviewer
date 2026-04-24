@@ -55,6 +55,13 @@ async def edit(req: EditRequest) -> EditResponse:
     session = entry.session
     start = req.selection.start
 
+    cell = None
+    if start.cell is not None:
+        cell = {
+            "parentParaIndex": start.cell.parentParaIndex,
+            "controlIndex": start.cell.controlIndex,
+            "cellIndex": start.cell.cellIndex,
+        }
     try:
         edit_entry = session.apply_edit(
             sec=start.sec,
@@ -62,6 +69,7 @@ async def edit(req: EditRequest) -> EditResponse:
             char_offset=start.charOffset,
             length=req.selection.length,
             new_text=req.newText,
+            cell=cell,
         )
     except Exception as e:  # noqa: BLE001
         logger.exception(
