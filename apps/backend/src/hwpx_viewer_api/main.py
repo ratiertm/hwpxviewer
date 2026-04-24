@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .config import get_settings
-from .routes import claude, download, health, render, upload
+from .routes import claude, download, health, hit_test, render, upload
 from .security.cors import install_cors
 
 
@@ -43,7 +43,9 @@ def create_app() -> FastAPI:
     app.include_router(upload.router)
     app.include_router(render.router)
     app.include_router(download.router)
-    # /api/hit-test + /api/edit land in M5R / M6R respectively.
+    # M5R — coordinate API: hit-test, selection-rects, text-range.
+    app.include_router(hit_test.router)
+    # /api/edit (M6R) still pending.
 
     return app
 

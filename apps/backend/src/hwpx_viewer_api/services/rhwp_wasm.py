@@ -274,9 +274,9 @@ def _decode_result_string(session: DocumentSession, ret: Any) -> Any:
         return _parse_json_maybe(ret)
     # Expect a tuple. The exact arity differs per export; we support the two
     # most common: (ptr, len, err_ptr, is_err) and (ptr, len).
-    if isinstance(ret, tuple) and len(ret) >= 2:
-        ptr, length = ret[0], ret[1]
-        is_err = ret[3] if len(ret) >= 4 else 0
+    if isinstance(ret, (tuple, list)) and len(ret) >= 2:
+        ptr, length = int(ret[0]), int(ret[1])
+        is_err = int(ret[3]) if len(ret) >= 4 else 0
         text = _read_utf8(session, ptr, length)
         try:
             session._exports["__wbindgen_free"](session._store, ptr, length, 1)
