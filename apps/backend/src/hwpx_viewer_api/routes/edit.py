@@ -70,6 +70,8 @@ async def edit(req: EditRequest) -> EditResponse:
             length=req.selection.length,
             new_text=req.newText,
             cell=cell,
+            end_para=(req.selection.end.para if req.selection.end is not None else None),
+            end_char_offset=(req.selection.end.charOffset if req.selection.end is not None else None),
         )
     except Exception as e:  # noqa: BLE001
         logger.exception(

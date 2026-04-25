@@ -90,16 +90,20 @@ def apply_edits_to_hwpx(original_bytes: bytes, edits: Iterable[dict[str, Any]]) 
 
 
 def _patch_section_xml(xml_bytes: bytes, edits: list[dict[str, Any]]) -> bytes:
-    """Apply every edit in ``edits`` to a single section XML and return bytes."""
-    # lxml keeps the original XML declaration + prefix order via tostring().
+    """Apply every edit in ``edits`` to a single section XML and return bytes.
+
+    Edits are applied IN ORDER because cross-paragraph edits mutate the
+    paragraph count, and subsequent edits' ``para`` indices refer to the
+    post-collapse state that rhwp saw at the time of that edit. We re-query
+    ``body_paragraphs`` after each cross-para apply so later edits index
+    into the same paragraph list rhwp was using.
+    """
     parser = etree.XMLParser(remove_blank_text=False)
     root = etree.fromstring(xml_bytes, parser=parser)
 
-    # Body paragraphs are direct children of <hs:sec>.
-    body_paragraphs = root.findall("hp:p", _NS)
-
     for edit in edits:
         try:
+            body_paragraphs = root.findall("hp:p", _NS)
             _apply_single_edit(body_paragraphs, edit)
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -117,12 +121,47 @@ def _patch_section_xml(xml_bytes: bytes, edits: list[dict[str, Any]]) -> bytes:
 
 
 def _apply_single_edit(body_paragraphs: list, edit: dict[str, Any]) -> None:
-    """Locate the target paragraph (body or inside a cell) and splice its text."""
+    """Locate the target paragraph(s) and splice the edit in.
+
+    Two forms handled:
+      - single paragraph (no ``endPara``): splice ``oldText`` worth of chars
+        at ``(para, charOffset)`` with ``newText``.
+      - cross paragraph (``endPara`` set): truncate start paragraph at
+        ``charOffset``, drop paragraphs ``(para+1 .. endPara-1)`` entirely,
+        merge the remainder of the end paragraph (from ``endCharOffset``)
+        into the start paragraph. ``newText`` is spliced in between.
+    """
     cell = edit.get("cell")
     char_offset = int(edit["charOffset"])
-    length = len(edit.get("oldText", ""))
     new_text = edit.get("newText", "")
+    end_para_idx = edit.get("endPara")
 
+    # --- cross-paragraph branch ----------------------------------------------
+    if end_para_idx is not None:
+        end_char_offset = int(edit.get("endCharOffset", 0))
+        if cell is None:
+            _apply_cross_para_body_edit(
+                body_paragraphs,
+                start_para=int(edit["para"]),
+                start_off=char_offset,
+                end_para=int(end_para_idx),
+                end_off=end_char_offset,
+                new_text=new_text,
+            )
+        else:
+            _apply_cross_para_cell_edit(
+                body_paragraphs,
+                cell=cell,
+                start_para=int(edit["para"]),
+                start_off=char_offset,
+                end_para=int(end_para_idx),
+                end_off=end_char_offset,
+                new_text=new_text,
+            )
+        return
+
+    # --- single-paragraph branch (original path) -----------------------------
+    length = len(edit.get("oldText", ""))
     if cell is None:
         para = body_paragraphs[int(edit["para"])]
     else:
@@ -133,8 +172,101 @@ def _apply_single_edit(body_paragraphs: list, edit: dict[str, Any]) -> None:
             cell_index=int(cell["cellIndex"]),
             cell_para_index=int(edit["para"]),
         )
-
     _splice_paragraph_text(para, char_offset, length, new_text)
+
+
+def _concat_para_text(paragraph) -> str:
+    """Full visible text of a paragraph (concat all ``<hp:t>`` contents)."""
+    return "".join(
+        (t.text or "")
+        for run in paragraph.findall("hp:run", _NS)
+        for t in run.findall("hp:t", _NS)
+    )
+
+
+def _apply_cross_para_body_edit(
+    body_paragraphs: list,
+    *,
+    start_para: int,
+    start_off: int,
+    end_para: int,
+    end_off: int,
+    new_text: str,
+) -> None:
+    """Apply a cross-paragraph edit while **preserving paragraph structure**.
+
+    Previous implementation collapsed [start..end] into one paragraph, which
+    discarded the styling of the end paragraph (and every middle one) —
+    users saw headings flip into body style. v0.3.1 changed rhwp-side to
+    per-paragraph deletes; the XML side mirrors that:
+
+      - start paragraph: truncate at ``start_off``, append ``new_text``
+        (keeps start's ``paraPrIDRef`` + first-run charPrIDRef).
+      - middle paragraphs: empty their text but keep the ``<hp:p>`` element
+        so paragraph indices (rhwp + XML) stay in sync for subsequent edits.
+      - end paragraph: delete the ``[0:end_off]`` prefix, keep the rest
+        (preserves end's own styling and trailing content).
+    """
+    start = body_paragraphs[start_para]
+    end = body_paragraphs[end_para]
+
+    # 1. Start paragraph: delete tail + append new_text.
+    start_full_len = len(_concat_para_text(start))
+    _splice_paragraph_text(start, start_off, start_full_len - start_off, new_text)
+
+    # 2. Middle paragraphs: empty out all <hp:t> text nodes, keep structure.
+    for p in body_paragraphs[start_para + 1 : end_para]:
+        _empty_paragraph_text(p)
+
+    # 3. End paragraph: delete head prefix.
+    if end_off > 0:
+        _splice_paragraph_text(end, 0, end_off, "")
+
+
+def _apply_cross_para_cell_edit(
+    body_paragraphs: list,
+    *,
+    cell: dict[str, Any],
+    start_para: int,
+    start_off: int,
+    end_para: int,
+    end_off: int,
+    new_text: str,
+) -> None:
+    """Same per-paragraph split as the body variant, inside a table cell."""
+    parent_para = body_paragraphs[int(cell["parentParaIndex"])]
+    start = _resolve_cell_paragraph(
+        parent_para,
+        control_index=int(cell["controlIndex"]),
+        cell_index=int(cell["cellIndex"]),
+        cell_para_index=start_para,
+    )
+    end = _resolve_cell_paragraph(
+        parent_para,
+        control_index=int(cell["controlIndex"]),
+        cell_index=int(cell["cellIndex"]),
+        cell_para_index=end_para,
+    )
+    start_full_len = len(_concat_para_text(start))
+    _splice_paragraph_text(start, start_off, start_full_len - start_off, new_text)
+
+    sub_list = start.getparent()
+    if sub_list is not None:
+        cell_paragraphs = sub_list.findall("hp:p", _NS)
+        for p in cell_paragraphs[start_para + 1 : end_para]:
+            _empty_paragraph_text(p)
+    if end_off > 0:
+        _splice_paragraph_text(end, 0, end_off, "")
+
+
+def _empty_paragraph_text(paragraph) -> None:
+    """Clear the visible text of every ``<hp:t>`` inside ``paragraph``
+    without removing the element itself. Structural children (runs, ctrls,
+    tables, etc.) stay intact so paragraph / control indices in rhwp and
+    the XML remain aligned across subsequent edits."""
+    for run in paragraph.findall("hp:run", _NS):
+        for t in run.findall("hp:t", _NS):
+            t.text = ""
 
 
 def _resolve_cell_paragraph(

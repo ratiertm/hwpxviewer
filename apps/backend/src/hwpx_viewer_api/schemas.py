@@ -123,12 +123,23 @@ class RunLocation(BaseModel):
 
 
 class Selection(BaseModel):
-    """A contiguous text range. Matches the shape the rhwp ``insertText``/
-    ``deleteText`` API expects: start location + character length.
+    """A contiguous text range.
+
+    Two shapes:
+      - **single paragraph**: ``{ start, length }`` — legacy form. ``end``
+        is ``None`` and the range stays within ``start.para``.
+      - **multi paragraph / multi cell-para**: ``{ start, end }`` — used for
+        cross-paragraph selections. ``length`` is ignored server-side when
+        ``end`` is present.
+
+    For cell selections, ``end.cell`` must equal ``start.cell`` (cells can
+    span multiple cell-paragraphs, but not jump between cells or between
+    body and cell). The server rejects mixed forms.
     """
 
     start: RunLocation
-    length: int = Field(ge=0)
+    length: int = Field(default=0, ge=0)
+    end: RunLocation | None = None
 
 
 # ============================================================

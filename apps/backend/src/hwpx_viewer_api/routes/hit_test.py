@@ -97,16 +97,20 @@ async def hit_test(req: HitTestRequest) -> HitTestResponse:
 async def selection_rects(req: SelectionRectsRequest) -> SelectionRectsResponse:
     session = _session_or_404(req.uploadId)
     start = req.selection.start
-    end_offset = start.charOffset + req.selection.length
+    end = req.selection.end
+    if end is not None:
+        end_para = end.para
+        end_offset = end.charOffset
+    else:
+        end_para = start.para
+        end_offset = start.charOffset + req.selection.length
 
     try:
         raw = session.get_selection_rects(
             sec=start.sec,
             start_para=start.para,
             start_char_offset=start.charOffset,
-            # v0.3: single-run selections only (cross-paragraph handled by
-            # chaining multiple Selection calls from the client).
-            end_para=start.para,
+            end_para=end_para,
             end_char_offset=end_offset,
             cell=_cell_dict(start),
         )
@@ -170,13 +174,23 @@ async def text_range(req: TextRangeRequest) -> TextRangeResponse:
     session = _session_or_404(req.uploadId)
     start = req.selection.start
     try:
-        text = session.get_text_range(
-            sec=start.sec,
-            para=start.para,
-            char_offset=start.charOffset,
-            count=req.selection.length,
-            cell=_cell_dict(start),
-        )
+        if req.selection.end is not None:
+            text = session.get_text_across(
+                sec=start.sec,
+                start_para=start.para,
+                start_char_offset=start.charOffset,
+                end_para=req.selection.end.para,
+                end_char_offset=req.selection.end.charOffset,
+                cell=_cell_dict(start),
+            )
+        else:
+            text = session.get_text_range(
+                sec=start.sec,
+                para=start.para,
+                char_offset=start.charOffset,
+                count=req.selection.length,
+                cell=_cell_dict(start),
+            )
     except Exception as e:  # noqa: BLE001
         logger.exception("text_range.failed", extra={"upload_id": req.uploadId})
         raise HTTPException(status_code=500, detail={"error": {

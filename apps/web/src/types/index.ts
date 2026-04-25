@@ -99,10 +99,17 @@ export interface RunLocation {
   cell?: CellRef | null;
 }
 
-/** A contiguous text range. */
+/** A contiguous text range.
+ *
+ * Single-paragraph form: ``{ start, length }`` (legacy).
+ * Cross-paragraph form: ``{ start, end }`` — ``length`` ignored server-side
+ * when ``end`` is present. The section / cell context must match between
+ * start and end (no jumping between body and cell, no nesting hops).
+ */
 export interface Selection {
   start: RunLocation;
   length: number;
+  end?: RunLocation | null;
 }
 
 export interface SelectionRect {

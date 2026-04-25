@@ -239,6 +239,81 @@ class DocumentSession:
             return int(ret[0])
         return int(ret)
 
+    # ----- cross-paragraph range helpers (M7R multi-row) -----------------
+
+    def get_text_across(
+        self,
+        sec: int,
+        start_para: int,
+        start_char_offset: int,
+        end_para: int,
+        end_char_offset: int,
+        cell: Optional[dict[str, int]] = None,
+    ) -> str:
+        """Concatenate text across paragraphs for a cross-para selection.
+
+        rhwp's ``getTextRange`` is single-paragraph only, so we iterate
+        paragraphs and stitch. ``\\n`` joins preserve legibility in chat
+        attachments and in the edit log's ``oldText`` snapshot — not in the
+        HWPX save path (the XML patcher collapses paragraphs on apply).
+        """
+        if start_para == end_para:
+            return self.get_text_range(
+                sec, start_para, start_char_offset,
+                end_char_offset - start_char_offset, cell=cell,
+            )
+        parts: list[str] = []
+        # first paragraph: from start_char_offset to end of paragraph
+        first_len = self.get_paragraph_length(sec, start_para, cell=cell) - start_char_offset
+        if first_len > 0:
+            parts.append(self.get_text_range(sec, start_para, start_char_offset, first_len, cell=cell))
+        # middle paragraphs: whole text
+        for p in range(start_para + 1, end_para):
+            plen = self.get_paragraph_length(sec, p, cell=cell)
+            parts.append(self.get_text_range(sec, p, 0, plen, cell=cell) if plen > 0 else "")
+        # last paragraph: from 0 to end_char_offset
+        if end_char_offset > 0:
+            parts.append(self.get_text_range(sec, end_para, 0, end_char_offset, cell=cell))
+        return "\n".join(parts)
+
+    def delete_range(
+        self,
+        sec: int,
+        start_para: int,
+        start_char_offset: int,
+        end_para: int,
+        end_char_offset: int,
+        cell: Optional[dict[str, int]] = None,
+    ) -> dict[str, Any]:
+        """Delete a cross-paragraph range via rhwp's ``deleteRange`` export.
+
+        rhwp collapses the affected paragraphs into one after the call. The
+        XML patcher mirrors this by removing the trailing paragraphs and
+        merging remainders into the start paragraph on save.
+        """
+        if cell is not None:
+            return self._call_json(
+                "hwpdocument_deleteRangeInCell",
+                self._handle,
+                sec,
+                int(cell["parentParaIndex"]),
+                int(cell["controlIndex"]),
+                int(cell["cellIndex"]),
+                start_para,
+                start_char_offset,
+                end_para,
+                end_char_offset,
+            ) or {}
+        return self._call_json(
+            "hwpdocument_deleteRange",
+            self._handle,
+            sec,
+            start_para,
+            start_char_offset,
+            end_para,
+            end_char_offset,
+        ) or {}
+
     def get_selection_rects(
         self,
         sec: int,
@@ -250,10 +325,191 @@ class DocumentSession:
     ) -> list[dict[str, float]]:
         """Return pixel rectangles covering a selection. One rect per visual line.
 
-        When ``cell`` is present, routes to
-        ``hwpdocument_getSelectionRectsInCell`` — the cell-para indices are
-        passed through ``start_para`` / ``end_para``.
+        For same-paragraph ranges we call rhwp's native ``getSelectionRects``
+        directly. For **cross-paragraph** ranges we DON'T — rhwp was
+        empirically observed to drop the leading heading's rect when the
+        start paragraph has a heading ``paraPrIDRef`` (user report
+        2026-04-25, textLen=244 with visible heading in text but 6 rects
+        covering only the body). Instead we fan out per paragraph and
+        concatenate the results so every line in the range is represented.
         """
+        if start_para == end_para:
+            rects = self._call_selection_rects(
+                sec, start_para, start_char_offset, end_para, end_char_offset, cell=cell,
+            )
+        else:
+            rects = []
+            # First paragraph: from start_char_offset to end of paragraph.
+            first_len = self.get_paragraph_length(sec, start_para, cell=cell)
+            if first_len > start_char_offset:
+                rects.extend(
+                    self._call_selection_rects(
+                        sec, start_para, start_char_offset, start_para, first_len, cell=cell,
+                    )
+                )
+            # Middle paragraphs: full paragraph.
+            for p in range(start_para + 1, end_para):
+                plen = self.get_paragraph_length(sec, p, cell=cell)
+                if plen > 0:
+                    rects.extend(
+                        self._call_selection_rects(sec, p, 0, p, plen, cell=cell)
+                    )
+            # End paragraph: from 0 to end_char_offset.
+            if end_char_offset > 0:
+                rects.extend(
+                    self._call_selection_rects(
+                        sec, end_para, 0, end_para, end_char_offset, cell=cell,
+                    )
+                )
+        # ---- Step 1: dedup --------------------------------------------------
+        # rhwp empirically duplicates one rect in some selections.
+        seen: set[tuple[int, int, int, int, int]] = set()
+        unique: list[dict[str, float]] = []
+        for r in rects:
+            key = (
+                int(r["page"]),
+                round(r["x"]),
+                round(r["y"]),
+                round(r["width"]),
+                round(r["height"]),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(r)
+
+        # ---- Step 2: detect & synthesize missing line(s) via cursor-rect ----
+        # Probe rhwp's cursor positions at the selection START and just BEFORE
+        # the selection END. Any visible line that doesn't already have a rect
+        # gets one synthesized from the cursor-rect data. This recovers
+        # paragraphs where rhwp's getSelectionRects dropped the leading or
+        # trailing line (user report 2026-04-25 — 5 lines selected, rhwp
+        # returned 4 unique rects + 1 duplicate, missing the tail line).
+        if start_para == end_para:
+            # Single paragraph: probe start + (end-1).
+            self._augment_missing_lines(
+                unique,
+                sec=sec,
+                start_para=start_para,
+                start_char_offset=start_char_offset,
+                end_para=end_para,
+                end_char_offset=end_char_offset,
+                cell=cell,
+            )
+        else:
+            # Cross paragraph: each paragraph already went through fanout.
+            # Probe start of first paragraph and end of last paragraph.
+            self._augment_missing_lines(
+                unique,
+                sec=sec,
+                start_para=start_para,
+                start_char_offset=start_char_offset,
+                end_para=end_para,
+                end_char_offset=end_char_offset,
+                cell=cell,
+            )
+        return unique
+
+    def _augment_missing_lines(
+        self,
+        rects: list[dict[str, float]],
+        *,
+        sec: int,
+        start_para: int,
+        start_char_offset: int,
+        end_para: int,
+        end_char_offset: int,
+        cell: Optional[dict[str, int]] = None,
+    ) -> None:
+        """Probe cursor-rect at the selection boundaries and append rects for
+        any visible line that is unrepresented in ``rects`` (mutated in place).
+
+        Strategy:
+          - Probe START cursor (offset = ``start_char_offset`` in start paragraph)
+          - Probe END cursor (offset = ``end_char_offset - 1`` in end paragraph,
+            or ``end_char_offset`` if the latter is not the very first position)
+          - For each probe, if its (page, y) does not match any existing rect,
+            synthesize a rect at that y. Width is taken from the typical
+            full-line width seen in ``rects`` (or a sensible default).
+        """
+        # Determine the typical line width from existing full-width rects.
+        # When the selection is multi-line, the longest rect tells us the
+        # paragraph's line content width.
+        typical_width = max((r["width"] for r in rects), default=0.0)
+        typical_x = min((r["x"] for r in rects), default=0.0)
+        typical_height = max((r["height"] for r in rects), default=0.0)
+        line_height = _line_spacing(rects) or typical_height or 0.0
+
+        def _has_line_at(page: int, y: float) -> bool:
+            """rects already cover the line whose y is within ±half line height of ``y``?"""
+            tol = max(line_height * 0.5, 4.0)
+            for r in rects:
+                if int(r["page"]) != page:
+                    continue
+                if abs(float(r["y"]) - y) <= tol:
+                    return True
+            return False
+
+        # ---- Probe START boundary ----
+        try:
+            start_cur = self.get_cursor_rect(sec, start_para, start_char_offset, cell=cell)
+        except Exception:  # noqa: BLE001
+            start_cur = None
+        if start_cur is not None:
+            if not _has_line_at(int(start_cur["page"]), float(start_cur["y"])):
+                rects.append({
+                    "page": int(start_cur["page"]),
+                    "x": float(start_cur["x"]),
+                    "y": float(start_cur["y"]),
+                    "width": max(typical_width - (float(start_cur["x"]) - typical_x), typical_width),
+                    "height": float(start_cur.get("height", typical_height)),
+                })
+
+        # ---- Probe END boundary ----
+        # cursor at end_char_offset gives the position AFTER the last selected
+        # char in end_para. If end_char_offset == 0, probe end_para - 1's last
+        # position instead.
+        end_probe_para = end_para
+        end_probe_off = end_char_offset
+        if end_probe_off == 0 and end_probe_para > 0:
+            try:
+                prev_len = self.get_paragraph_length(sec, end_probe_para - 1, cell=cell)
+            except Exception:  # noqa: BLE001
+                prev_len = 0
+            end_probe_para -= 1
+            end_probe_off = max(0, prev_len - 1)
+        else:
+            end_probe_off = max(0, end_probe_off - 1)
+        try:
+            end_cur = self.get_cursor_rect(sec, end_probe_para, end_probe_off, cell=cell)
+        except Exception:  # noqa: BLE001
+            end_cur = None
+        if end_cur is not None:
+            if not _has_line_at(int(end_cur["page"]), float(end_cur["y"])):
+                # The end probe gives the cursor position AT the last char's
+                # left side. Width = typical_width so the synthetic rect
+                # covers the line up to the typical right edge (full width).
+                # If the actual last line is short, this slightly over-paints
+                # — acceptable for selection visual feedback.
+                last_x = float(end_cur["x"])
+                rects.append({
+                    "page": int(end_cur["page"]),
+                    "x": typical_x,
+                    "y": float(end_cur["y"]),
+                    "width": max(last_x - typical_x, typical_width * 0.4),
+                    "height": float(end_cur.get("height", typical_height)),
+                })
+
+    def _call_selection_rects(
+        self,
+        sec: int,
+        start_para: int,
+        start_char_offset: int,
+        end_para: int,
+        end_char_offset: int,
+        cell: Optional[dict[str, int]] = None,
+    ) -> list[dict[str, float]]:
+        """Raw single-call dispatch to rhwp's selection-rects export."""
         if cell is not None:
             result = self._call_json(
                 "hwpdocument_getSelectionRectsInCell",
@@ -275,6 +531,47 @@ class DocumentSession:
         if isinstance(result, list):
             return [_normalize_rect(r) for r in result]
         return []
+
+    def get_cursor_rect(
+        self,
+        sec: int,
+        para: int,
+        char_offset: int,
+        cell: Optional[dict[str, int]] = None,
+    ) -> Optional[dict[str, float]]:
+        """Caret position rect at ``(sec, para, char_offset)``.
+
+        rhwp's ``getCursorRect`` returns ``{pageIndex, x, y, height}`` —
+        same coord system as ``getSelectionRects``. Used as a ground-truth
+        probe to detect lines that ``getSelectionRects`` missed.
+        """
+        if cell is not None:
+            export_name = "hwpdocument_getCursorRectInCell"
+            if export_name not in self._exports:
+                return None
+            result = self._call_json(
+                export_name,
+                self._handle,
+                sec,
+                int(cell["parentParaIndex"]),
+                int(cell["controlIndex"]),
+                int(cell["cellIndex"]),
+                para,
+                char_offset,
+            )
+        else:
+            export_name = "hwpdocument_getCursorRect"
+            if export_name not in self._exports:
+                return None
+            result = self._call_json(export_name, self._handle, sec, para, char_offset)
+        if not isinstance(result, dict):
+            return None
+        return {
+            "page": int(result.get("pageIndex", result.get("page", 0))),
+            "x": float(result.get("x", 0.0)),
+            "y": float(result.get("y", 0.0)),
+            "height": float(result.get("height", result.get("h", 0.0))),
+        }
 
     def insert_text(
         self,
@@ -336,53 +633,178 @@ class DocumentSession:
         length: int,
         new_text: str,
         cell: Optional[dict[str, int]] = None,
+        *,
+        end_para: Optional[int] = None,
+        end_char_offset: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Replace `length` chars at (sec, para, charOffset) with `new_text`.
+        """Replace the selected range with ``new_text``.
 
-        When ``cell`` is provided all three WASM calls (get_text_range,
-        delete_text, insert_text) route to their ``*InCell`` variants so
-        the edit lands inside a table cell.
+        Two modes:
+          - **single paragraph** (``end_para is None``): ``length`` chars
+            are deleted at ``(para, char_offset)``, then ``new_text`` is
+            inserted at the same spot.
+          - **cross paragraph** (``end_para`` set): split into per-paragraph
+            ``deleteText`` operations so each paragraph keeps its own
+            ``<hp:p>`` element + ``paraPrIDRef`` — this preserves heading /
+            body styling across the boundary and makes the edit fully
+            reversible by ``undo_edit``. rhwp's ``deleteRange`` is NOT
+            used because it collapses paragraphs and loses styles.
 
-        Captures ``oldText`` before the mutation so ``undo_edit`` can restore
-        the original. Returns the recorded edit dict.
+        The per-paragraph split looks like:
+          1. Snapshot start-paragraph tail, end-paragraph head, and the
+             full text of every paragraph strictly between them.
+          2. ``deleteText`` the start-paragraph tail (``[start_off, end_of_para)``).
+          3. ``deleteText`` the end-paragraph head (``[0, end_off)``).
+          4. For each middle paragraph, delete its entire content (leaves
+             an empty paragraph stump — structurally preserved).
+          5. ``insertText`` ``new_text`` at ``(para, char_offset)``.
+
+        ``undo_edit`` reverses each of those five steps precisely.
         """
-        old_text = (
-            self.get_text_range(sec, para, char_offset, length, cell=cell) if length > 0 else ""
-        )
-        if length > 0:
-            self.delete_text(sec, para, char_offset, length, cell=cell)
-        if new_text:
-            self.insert_text(sec, para, char_offset, new_text, cell=cell)
-        edit_id = self._next_edit_id
-        self._next_edit_id += 1
-        entry = {
-            "id": edit_id,
-            "sec": sec,
-            "para": para,
-            "charOffset": char_offset,
-            "oldText": old_text,
-            "newText": new_text,
-            "undone": False,
-            "cell": cell,   # preserve cell ref so undo can route identically
-        }
+        is_range = end_para is not None
+        entry: dict[str, Any]
+        if is_range:
+            end_para_i = int(end_para)
+            end_off_i = int(end_char_offset or 0)
+
+            # --- Step 1: snapshot every affected segment for undo replay ---
+            start_para_len = self.get_paragraph_length(sec, para, cell=cell)
+            start_tail = (
+                self.get_text_range(sec, para, char_offset, start_para_len - char_offset, cell=cell)
+                if start_para_len > char_offset else ""
+            )
+            end_head = (
+                self.get_text_range(sec, end_para_i, 0, end_off_i, cell=cell)
+                if end_off_i > 0 else ""
+            )
+            middles: list[dict[str, Any]] = []
+            for p in range(para + 1, end_para_i):
+                plen = self.get_paragraph_length(sec, p, cell=cell)
+                ptext = self.get_text_range(sec, p, 0, plen, cell=cell) if plen > 0 else ""
+                middles.append({"para": p, "text": ptext, "length": plen})
+
+            old_text = "\n".join(
+                [start_tail] + [m["text"] for m in middles] + [end_head]
+            )
+
+            # --- Step 2 & 3: truncate the two boundary paragraphs ---
+            if start_para_len > char_offset:
+                self.delete_text(sec, para, char_offset, start_para_len - char_offset, cell=cell)
+            if end_off_i > 0:
+                self.delete_text(sec, end_para_i, 0, end_off_i, cell=cell)
+
+            # --- Step 4: empty every middle paragraph ---
+            for m in middles:
+                if m["length"] > 0:
+                    self.delete_text(sec, m["para"], 0, m["length"], cell=cell)
+
+            # --- Step 5: insert the replacement at the start point ---
+            if new_text:
+                self.insert_text(sec, para, char_offset, new_text, cell=cell)
+
+            edit_id = self._next_edit_id
+            self._next_edit_id += 1
+            entry = {
+                "id": edit_id,
+                "sec": sec,
+                "para": para,
+                "charOffset": char_offset,
+                "oldText": old_text,
+                "newText": new_text,
+                "undone": False,
+                "cell": cell,
+                "endPara": end_para_i,
+                "endCharOffset": end_off_i,
+                # Snapshots needed to reverse the per-paragraph delete chain.
+                "_startTail": start_tail,
+                "_endHead": end_head,
+                "_middles": middles,
+            }
+        else:
+            old_text = (
+                self.get_text_range(sec, para, char_offset, length, cell=cell)
+                if length > 0 else ""
+            )
+            if length > 0:
+                self.delete_text(sec, para, char_offset, length, cell=cell)
+            if new_text:
+                self.insert_text(sec, para, char_offset, new_text, cell=cell)
+            edit_id = self._next_edit_id
+            self._next_edit_id += 1
+            entry = {
+                "id": edit_id,
+                "sec": sec,
+                "para": para,
+                "charOffset": char_offset,
+                "oldText": old_text,
+                "newText": new_text,
+                "undone": False,
+                "cell": cell,
+            }
+
         self.edits.append(entry)
         self.version += 1
         return entry
 
     def undo_edit(self, edit_id: int) -> dict[str, Any]:
-        """Toggle an edit's ``undone`` flag and replay the inverse mutation."""
+        """Toggle an edit's ``undone`` flag and replay the inverse mutation.
+
+        Single-paragraph: delete ``newText`` span, insert ``oldText``.
+        Cross-paragraph: fully reversible because apply preserved paragraph
+        structure — we restore each snapshotted segment:
+          1. Remove ``newText`` from the start paragraph.
+          2. Re-insert the start paragraph's original tail.
+          3. Re-insert each middle paragraph's text.
+          4. Re-insert the end paragraph's original head.
+        """
         entry = next((e for e in self.edits if e["id"] == edit_id), None)
         if entry is None:
             raise KeyError(f"edit {edit_id} not found")
-        currently_new = entry["newText"] if not entry["undone"] else entry["oldText"]
-        target_text = entry["oldText"] if not entry["undone"] else entry["newText"]
+
         sec, para, off = entry["sec"], entry["para"], entry["charOffset"]
         cell = entry.get("cell")
-        if currently_new:
-            self.delete_text(sec, para, off, len(currently_new), cell=cell)
-        if target_text:
-            self.insert_text(sec, para, off, target_text, cell=cell)
-        entry["undone"] = not entry["undone"]
+        is_range = "endPara" in entry
+        currently_undone = entry["undone"]
+
+        if is_range:
+            if not currently_undone:
+                # Apply → undone: reverse all five apply steps.
+                new_text = entry["newText"]
+                if new_text:
+                    self.delete_text(sec, para, off, len(new_text), cell=cell)
+                start_tail = entry.get("_startTail", "")
+                if start_tail:
+                    self.insert_text(sec, para, off, start_tail, cell=cell)
+                for m in entry.get("_middles", []):
+                    if m["text"]:
+                        self.insert_text(sec, m["para"], 0, m["text"], cell=cell)
+                end_head = entry.get("_endHead", "")
+                if end_head:
+                    self.insert_text(sec, entry["endPara"], 0, end_head, cell=cell)
+            else:
+                # Undone → redo: replay the original five apply steps.
+                # Delete the tail the undo reinserted, then the middles, then the head.
+                start_tail = entry.get("_startTail", "")
+                if start_tail:
+                    self.delete_text(sec, para, off, len(start_tail), cell=cell)
+                for m in entry.get("_middles", []):
+                    if m["text"]:
+                        self.delete_text(sec, m["para"], 0, len(m["text"]), cell=cell)
+                end_head = entry.get("_endHead", "")
+                if end_head:
+                    self.delete_text(sec, entry["endPara"], 0, len(end_head), cell=cell)
+                new_text = entry["newText"]
+                if new_text:
+                    self.insert_text(sec, para, off, new_text, cell=cell)
+        else:
+            currently_new = entry["newText"] if not currently_undone else entry["oldText"]
+            target_text = entry["oldText"] if not currently_undone else entry["newText"]
+            if currently_new:
+                self.delete_text(sec, para, off, len(currently_new), cell=cell)
+            if target_text:
+                self.insert_text(sec, para, off, target_text, cell=cell)
+
+        entry["undone"] = not currently_undone
         self.version += 1
         return entry
 
@@ -541,6 +963,30 @@ def _normalize_rect(d: dict[str, Any]) -> dict[str, float]:
         "width": float(d.get("width", d.get("w", 0.0))),
         "height": float(d.get("height", d.get("h", 0.0))),
     }
+
+
+def _line_spacing(rects: list[dict[str, float]]) -> float:
+    """Estimate per-line vertical spacing from a list of rects.
+
+    Returns the smallest positive y-delta between consecutive rects in
+    document order, or 0.0 if no clean signal is available. Used by the
+    cursor-rect augmentation pass to decide whether a probe's y matches
+    an existing rect's line.
+    """
+    ys = sorted({float(r["y"]) for r in rects})
+    deltas: list[float] = []
+    for a, b in zip(ys, ys[1:]):
+        d = b - a
+        if d > 0.5:
+            deltas.append(d)
+    return min(deltas) if deltas else 0.0
+
+
+# NOTE: A previous "repair leading duplicate" approach was removed on
+# 2026-04-25; it placed boxes in the wrong area when the actual missing
+# line was after the last reported rect. The current strategy is to dedup
+# rhwp's output and then probe rhwp's cursor-rect API at the boundaries
+# to recover any line that ``getSelectionRects`` failed to emit.
 
 
 def _consume_bytes(session: DocumentSession, ret: Any) -> bytes:

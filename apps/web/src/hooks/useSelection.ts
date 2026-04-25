@@ -92,8 +92,24 @@ export function sameParagraph(a: RunLocation, b: RunLocation): boolean {
   );
 }
 
+/** Two RunLocations live in the same section (for body) or the same cell
+ *  (for cell text). Required gate for cross-paragraph selections — we don't
+ *  allow a range that jumps from body to a cell, or between cells. */
+export function sameScope(a: RunLocation, b: RunLocation): boolean {
+  if (a.sec !== b.sec) return false;
+  const ac = a.cell ?? null;
+  const bc = b.cell ?? null;
+  if (!ac && !bc) return true;
+  if (!ac || !bc) return false;
+  return (
+    ac.parentParaIndex === bc.parentParaIndex &&
+    ac.controlIndex === bc.controlIndex &&
+    ac.cellIndex === bc.cellIndex
+  );
+}
+
 export function lengthBetween(a: RunLocation, b: RunLocation): number | null {
-  if (!sameParagraph(a, b)) return null;  // cross-paragraph / cross-cell unsupported
+  if (!sameParagraph(a, b)) return null;  // cross-paragraph needs the end-location path
   return Math.max(0, b.charOffset - a.charOffset);
 }
 
@@ -149,6 +165,23 @@ export function useSelection(uploadId: string | null): UseSelectionApi {
           getSelectionRects(uploadId, selection),
           getTextRange(uploadId, selection),
         ]);
+        const debug = {
+          selection,
+          rectCount: rects.length,
+          rectPages: [...new Set(rects.map((r) => r.page))].sort(),
+          textLen: text.length,
+          textPreview: text.slice(0, 60),
+          rects: rects.map((r) => ({
+            page: r.page,
+            x: Math.round(r.x),
+            y: Math.round(r.y),
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+          })),
+        };
+        // eslint-disable-next-line no-console
+        console.log('[selection.paragraph]', debug);
+        (window as unknown as { __lastSelection: unknown }).__lastSelection = debug;
         setActive({ page, selection, rects, text, mode: 'paragraph' });
       } catch (e) {
         const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
@@ -182,19 +215,41 @@ export function useSelection(uploadId: string | null): UseSelectionApi {
           return;
         }
         const [aLoc, bLoc] = orderLocations(startLoc, endLoc);
-        const length = lengthBetween(aLoc, bLoc);
-        if (length === null) {
-          setError('여러 단락에 걸친 선택은 아직 지원하지 않습니다.');
+        if (!sameScope(aLoc, bLoc)) {
+          setError('표 셀과 본문 사이를 걸치는 선택은 지원하지 않습니다.');
           return;
         }
-        if (length === 0) {
-          return;
+        let selection: Selection;
+        if (sameParagraph(aLoc, bLoc)) {
+          const length = Math.max(0, bLoc.charOffset - aLoc.charOffset);
+          if (length === 0) return;
+          selection = { start: aLoc, length };
+        } else {
+          // Cross-paragraph. Server accepts ``{ start, end }`` directly;
+          // length stays 0 as a placeholder.
+          selection = { start: aLoc, end: bLoc, length: 0 };
         }
-        const selection: Selection = { start: aLoc, length };
         const [rects, text] = await Promise.all([
           getSelectionRects(uploadId, selection),
           getTextRange(uploadId, selection),
         ]);
+        const debug = {
+          selection,
+          rectCount: rects.length,
+          rectPages: [...new Set(rects.map((r) => r.page))].sort(),
+          textLen: text.length,
+          textPreview: text.slice(0, 60),
+          rects: rects.map((r) => ({
+            page: r.page,
+            x: Math.round(r.x),
+            y: Math.round(r.y),
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+          })),
+        };
+        // eslint-disable-next-line no-console
+        console.log('[selection.range]', debug);
+        (window as unknown as { __lastSelection: unknown }).__lastSelection = debug;
         setActive({ page, selection, rects, text, mode: 'range' });
       } catch (e) {
         const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
@@ -214,12 +269,14 @@ export function useSelection(uploadId: string | null): UseSelectionApi {
       if (!drag) return;
       const shiftNow = drag.shift || evt.shiftKey;
       if (!shiftNow) {
-        // Plain drag produces no preview — either it'll be a click on release,
-        // or the user is reading/scrolling. Don't clutter the overlay.
         if (preview !== null) setPreview(null);
         return;
       }
       const cur = toSvgSpace(drag.svgEl, evt.clientX, evt.clientY);
+      // Always render the dashed box during shift+drag so the user has
+      // immediate spatial feedback. The box is an *approximation* — on
+      // mouseup it's replaced by the accurate per-line indigo rects
+      // returned by rhwp's getSelectionRects.
       setPreview({
         page: drag.page,
         x: Math.min(drag.startSvg.x, cur.x),

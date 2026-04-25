@@ -18,7 +18,9 @@ import {
   uploadHwpx,
 } from '@/api/document';
 import { ChatPanel } from '@/components/chat/ChatPanel';
-import { HistoryList } from '@/components/viewer/HistoryList';
+import { HistoryPanel } from '@/components/history/HistoryPanel';
+import { FloatingDock } from '@/components/layout/FloatingDock';
+import { StatusBar } from '@/components/layout/StatusBar';
 import { SvgPage } from '@/components/viewer/SvgPage';
 import { InlineSelectionMenu } from '@/components/inline/InlineSelectionMenu';
 import { InlineLoadingBlock } from '@/components/inline/InlineLoadingBlock';
@@ -27,7 +29,7 @@ import { InlineCherryPickDiff } from '@/components/inline/InlineCherryPickDiff';
 import { useInlineAi } from '@/hooks/useInlineAi';
 import { useSelection } from '@/hooks/useSelection';
 import { useViewerStore } from '@/state/store';
-import { MessageSquare } from 'lucide-react';
+import { GitBranch, MessageSquare } from 'lucide-react';
 import type { DocumentInfo, HistoryEntry } from '@/types';
 
 interface LoadedDoc {
@@ -84,6 +86,10 @@ export default function App() {
   const setEditing = useViewerStore((s) => s.setEditing);
   const chatOpen = useViewerStore((s) => s.chatOpen);
   const toggleChat = useViewerStore((s) => s.toggleChat);
+  const historyOpen = useViewerStore((s) => s.historyOpen);
+  const toggleHistory = useViewerStore((s) => s.toggleHistory);
+  const isStreaming = useViewerStore((s) => s.isStreaming);
+  const messages = useViewerStore((s) => s.messages);
   const setDocumentInStore = useViewerStore((s) => s.setDocument);
   const clearDocumentInStore = useViewerStore((s) => s.clearDocument);
 
@@ -362,6 +368,16 @@ export default function App() {
               다운로드
             </button>
             <button
+              onClick={toggleHistory}
+              title="변경 이력"
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md border text-xs ${
+                historyOpen ? 'border-accent text-accent' : 'border-border text-text-muted hover:bg-bg-muted'
+              }`}
+            >
+              <GitBranch size={12} />
+              History · {history.filter((h) => !h.undone).length}
+            </button>
+            <button
               onClick={toggleChat}
               title="AI 대화"
               className={`flex items-center gap-1.5 px-3 py-1 rounded-md border text-xs ${
@@ -473,14 +489,9 @@ export default function App() {
                   </div>
                 </button>
               ))}
-              <div className="px-2 pt-3 pb-1 text-[10px] uppercase tracking-wider text-text-subtle border-t border-border-subtle mt-3">
-                편집 기록 · {history.length}
-              </div>
-              <HistoryList
-                entries={history}
-                busyId={undoBusyId}
-                onToggle={onToggleHistory}
-              />
+              {/* Editing history moved to the right-side HistoryPanel
+                  (toggle via the header button). Sidebar stays focused on
+                  page navigation. */}
             </div>
           </aside>
 
@@ -505,6 +516,25 @@ export default function App() {
             {selection.busy && (
               <div className="fixed bottom-4 right-4 text-xs text-text-muted bg-bg-panel border border-border rounded px-3 py-1.5 shadow">
                 선택 영역 계산 중…
+              </div>
+            )}
+            {selection.active && !selection.busy && (
+              <div
+                className="fixed top-16 right-4 z-20 text-[11px] px-2.5 py-1 rounded-md border shadow backdrop-blur-xl flex items-center gap-2"
+                style={{
+                  backgroundColor: 'var(--bg-panel)',
+                  borderColor: 'var(--accent)',
+                  color: 'var(--text-muted)',
+                }}
+                title="선택 영역 상태 (rects 수 · 선택 글자수). 보라색 박스와 텍스트 길이 불일치 시 신고."
+              >
+                <span style={{ color: 'var(--accent)' }}>●</span>
+                <span className="tabular-nums">
+                  {selection.active.rects.length}줄 · {selection.active.text.length}자
+                </span>
+                <span style={{ color: 'var(--text-faint)' }}>
+                  ({selection.active.mode === 'paragraph' ? '문단' : '범위'})
+                </span>
               </div>
             )}
             {selection.error && !selection.active && (
@@ -565,6 +595,19 @@ export default function App() {
 
           {/* AI conversation panel — slides in from the right. */}
           <aside
+            className={`${historyOpen ? 'w-80' : 'w-0'} flex-shrink-0 overflow-hidden transition-[width] duration-200`}
+          >
+            {historyOpen && (
+              <HistoryPanel
+                entries={history}
+                busyId={undoBusyId}
+                onClose={toggleHistory}
+                onToggle={onToggleHistory}
+              />
+            )}
+          </aside>
+
+          <aside
             className={`${chatOpen ? 'w-[420px]' : 'w-0'} flex-shrink-0 overflow-hidden transition-[width] duration-200`}
           >
             {chatOpen && (
@@ -577,6 +620,26 @@ export default function App() {
             )}
           </aside>
         </div>
+      )}
+
+      {/* Bottom floating page nav + status bar (only when a doc is loaded). */}
+      {doc && (
+        <>
+          <FloatingDock
+            currentPage={activePage}
+            pageCount={doc.info.pageCount}
+            onJumpToPage={jumpToPage}
+          />
+          <StatusBar
+            fileName={doc.info.fileName}
+            pageCount={doc.info.pageCount}
+            currentPage={activePage}
+            edits={history.filter((h) => !h.undone).length}
+            turns={messages.filter((m) => m.role === 'user').length}
+            isStreaming={isStreaming}
+            version={doc.info.version}
+          />
+        </>
       )}
     </main>
   );
