@@ -1,0 +1,3 @@
+# Read-only third-party reference material (rhwp source, prototypes, samples).
+# Excluded from graphify so the knowledge graph centers on HwpxViewer itself.
+reference/

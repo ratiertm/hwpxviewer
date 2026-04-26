@@ -145,3 +145,12 @@
 - `docs/COMPONENT_INVENTORY.md` — 파일/컴포넌트 목록 (작성 예정)
 
 작업 시작 전 위 문서 중 작업과 관련된 것을 먼저 읽으십시오.
+
+## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Rules:
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)

@@ -48,3 +48,11 @@ reference/
 .pdca-status.json
 **/.bkit/
 **/.claude/
+
+# graphify knowledge graph — keep readable artifacts, drop binary/noise
+graphify-out/cache/
+graphify-out/cost.json
+graphify-out/.graphify_python
+graphify-out/.graphify_labels.json
+graphify-out/graph.json.pre-disambiguate
+graphify-out/graph.audit.json
