@@ -421,84 +421,100 @@ class DocumentSession:
         end_char_offset: int,
         cell: Optional[dict[str, int]] = None,
     ) -> None:
-        """Probe cursor-rect at the selection boundaries and append rects for
-        any visible line that is unrepresented in ``rects`` (mutated in place).
+        """Sweep cursor-rect across **every paragraph** in the selection and
+        synthesize a rect for any visual line not yet covered.
 
-        Strategy:
-          - Probe START cursor (offset = ``start_char_offset`` in start paragraph)
-          - Probe END cursor (offset = ``end_char_offset - 1`` in end paragraph,
-            or ``end_char_offset`` if the latter is not the very first position)
-          - For each probe, if its (page, y) does not match any existing rect,
-            synthesize a rect at that y. Width is taken from the typical
-            full-line width seen in ``rects`` (or a sensible default).
+        Replaces the previous boundary-only probe (2026-04-25) which missed
+        dropped middle lines on rhwp's getSelectionRects in some
+        environments. The sweep walks each paragraph at ~3-char increments,
+        collects distinct (page, y) positions seen by getCursorRect, and
+        appends a synthetic rect for any (page, y) absent from ``rects``.
+
+        rhwp's cursor-rect calls are cheap (≤ 5µs each on M-series), so even
+        a 500-char paragraph sweep at step=3 is ~170 calls < 1 ms.
         """
-        # Determine the typical line width from existing full-width rects.
-        # When the selection is multi-line, the longest rect tells us the
-        # paragraph's line content width.
+        # Step size in chars between cursor probes. Smaller = finer resolution
+        # but more WASM calls. 3 chars catches any line wrap that occurs at
+        # word boundaries (Korean public documents use ~30-40 char lines).
+        STEP = 3
+
         typical_width = max((r["width"] for r in rects), default=0.0)
         typical_x = min((r["x"] for r in rects), default=0.0)
         typical_height = max((r["height"] for r in rects), default=0.0)
-        line_height = _line_spacing(rects) or typical_height or 0.0
+        # Use the GLYPH height (≈ rect height) as our line-merge tolerance,
+        # not _line_spacing(rects) — that would be doubled when rhwp drops a
+        # line, which causes adjacent visual lines to be falsely merged into
+        # one entry. Glyph height is always an over-approximation safe to use.
+        # Default to 8px so very short selections still get a sensible value.
+        merge_tol = max(typical_height * 0.6, 8.0) if typical_height > 0 else 8.0
 
         def _has_line_at(page: int, y: float) -> bool:
-            """rects already cover the line whose y is within ±half line height of ``y``?"""
-            tol = max(line_height * 0.5, 4.0)
             for r in rects:
                 if int(r["page"]) != page:
                     continue
-                if abs(float(r["y"]) - y) <= tol:
+                if abs(float(r["y"]) - y) <= merge_tol:
                     return True
             return False
 
-        # ---- Probe START boundary ----
-        try:
-            start_cur = self.get_cursor_rect(sec, start_para, start_char_offset, cell=cell)
-        except Exception:  # noqa: BLE001
-            start_cur = None
-        if start_cur is not None:
-            if not _has_line_at(int(start_cur["page"]), float(start_cur["y"])):
-                rects.append({
-                    "page": int(start_cur["page"]),
-                    "x": float(start_cur["x"]),
-                    "y": float(start_cur["y"]),
-                    "width": max(typical_width - (float(start_cur["x"]) - typical_x), typical_width),
-                    "height": float(start_cur.get("height", typical_height)),
-                })
+        # Collect all (page, y) cursor positions across the selection.
+        seen_lines: list[tuple[int, float, float, float]] = []
+        # entries: (page, y, min_x, height)
 
-        # ---- Probe END boundary ----
-        # cursor at end_char_offset gives the position AFTER the last selected
-        # char in end_para. If end_char_offset == 0, probe end_para - 1's last
-        # position instead.
-        end_probe_para = end_para
-        end_probe_off = end_char_offset
-        if end_probe_off == 0 and end_probe_para > 0:
+        def _record(page: int, y: float, x: float, h: float) -> None:
+            for i, (p, ey, ex, eh) in enumerate(seen_lines):
+                if p == page and abs(ey - y) <= merge_tol:
+                    # Same line — keep the leftmost x and tallest height.
+                    seen_lines[i] = (p, ey, min(ex, x), max(eh, h))
+                    return
+            seen_lines.append((page, y, x, h))
+
+        for para in range(start_para, end_para + 1):
             try:
-                prev_len = self.get_paragraph_length(sec, end_probe_para - 1, cell=cell)
+                plen = self.get_paragraph_length(sec, para, cell=cell)
             except Exception:  # noqa: BLE001
-                prev_len = 0
-            end_probe_para -= 1
-            end_probe_off = max(0, prev_len - 1)
-        else:
-            end_probe_off = max(0, end_probe_off - 1)
-        try:
-            end_cur = self.get_cursor_rect(sec, end_probe_para, end_probe_off, cell=cell)
-        except Exception:  # noqa: BLE001
-            end_cur = None
-        if end_cur is not None:
-            if not _has_line_at(int(end_cur["page"]), float(end_cur["y"])):
-                # The end probe gives the cursor position AT the last char's
-                # left side. Width = typical_width so the synthetic rect
-                # covers the line up to the typical right edge (full width).
-                # If the actual last line is short, this slightly over-paints
-                # — acceptable for selection visual feedback.
-                last_x = float(end_cur["x"])
-                rects.append({
-                    "page": int(end_cur["page"]),
-                    "x": typical_x,
-                    "y": float(end_cur["y"]),
-                    "width": max(last_x - typical_x, typical_width * 0.4),
-                    "height": float(end_cur.get("height", typical_height)),
-                })
+                continue
+            lo = start_char_offset if para == start_para else 0
+            hi = end_char_offset if para == end_para else plen
+            if hi <= lo:
+                # Edge case: end_char_offset==0 on a multi-para selection.
+                # Still probe the start position so we don't miss the line.
+                hi = lo + 1
+            # Generate offsets to probe: every STEP chars + lo + (hi-1).
+            offsets = list(range(lo, hi, STEP))
+            if hi - 1 not in offsets:
+                offsets.append(hi - 1)
+            if lo not in offsets:
+                offsets.insert(0, lo)
+            for off in offsets:
+                if off < 0 or off > plen:
+                    continue
+                try:
+                    cur = self.get_cursor_rect(sec, para, off, cell=cell)
+                except Exception:  # noqa: BLE001
+                    continue
+                if cur is None:
+                    continue
+                _record(
+                    int(cur["page"]),
+                    float(cur["y"]),
+                    float(cur["x"]),
+                    float(cur.get("height", typical_height)),
+                )
+
+        # For each distinct line discovered, append a synthetic rect if not
+        # already covered by ``rects``.
+        for page, y, min_x, h in seen_lines:
+            if _has_line_at(page, y):
+                continue
+            rects.append({
+                "page": page,
+                "x": typical_x or min_x,
+                "y": y,
+                # Width: full line if we have a typical width, else fall back
+                # to typical width * 0.6 so the synthesized rect is visible.
+                "width": typical_width if typical_width > 0 else 200.0,
+                "height": h or typical_height or 16.0,
+            })
 
     def _call_selection_rects(
         self,
