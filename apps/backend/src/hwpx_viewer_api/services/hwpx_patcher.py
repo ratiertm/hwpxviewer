@@ -267,6 +267,8 @@ def _empty_paragraph_text(paragraph) -> None:
     for run in paragraph.findall("hp:run", _NS):
         for t in run.findall("hp:t", _NS):
             t.text = ""
+    # Rule 8: any pre-existing lineseg textpos > 0 is now invalid.
+    _clamp_paragraph_linesegs(paragraph)
 
 
 def _resolve_cell_paragraph(
@@ -335,6 +337,52 @@ def _resolve_cell_paragraph(
     return paragraphs[cell_para_index]
 
 
+def _utf16_len(s: str) -> int:
+    """UTF-16 code-unit count. BMP chars = 1, supplementary plane chars = 2."""
+    return len(s.encode("utf-16-le")) // 2
+
+
+def _clamp_paragraph_linesegs(paragraph) -> None:
+    """Rule 8 (한컴 보안경고 회피): clamp every ``<hp:lineseg textpos="N">``
+    so N never exceeds UTF-16(paragraph text). Stale textpos values left over
+    after an external text edit make 한컴 flag the file as "외부 수정".
+
+    Discovery: 2026-04-27. Trigger condition documented in
+    services/lineseg_postprocess.py Rule 8.
+
+    Strategy: compute the paragraph's current UTF-16 length from the
+    concatenated ``<hp:t>`` content, then clamp every lineseg's textpos
+    to that length. Force the first lineseg to textpos=0 (always safe).
+    """
+    text = "".join(
+        (t.text or "")
+        for run in paragraph.findall("hp:run", _NS)
+        for t in run.findall("hp:t", _NS)
+    )
+    max_pos = _utf16_len(text)
+
+    lsa = paragraph.find("hp:linesegarray", _NS)
+    if lsa is None:
+        return
+    segs = lsa.findall("hp:lineseg", _NS)
+    if not segs:
+        return
+
+    # First lineseg is always textpos=0 — never wrong.
+    segs[0].set("textpos", "0")
+    # Subsequent linesegs: clamp to max_pos. Also enforce monotonic
+    # non-decrease so a later seg can't appear before an earlier one.
+    prev = 0
+    for seg in segs[1:]:
+        try:
+            cur = int(seg.get("textpos", "0"))
+        except ValueError:
+            cur = 0
+        cur = max(prev, min(cur, max_pos))
+        seg.set("textpos", str(cur))
+        prev = cur
+
+
 def _splice_paragraph_text(paragraph, char_offset: int, length: int, new_text: str) -> None:
     """Replace a substring of a paragraph's concatenated ``<hp:t>`` text.
 
@@ -383,3 +431,6 @@ def _splice_paragraph_text(paragraph, char_offset: int, length: int, new_text: s
             if base + len(text) >= edit_start:
                 t.text = (text[: edit_start - base]) + new_text + (text[edit_start - base:])
                 break
+
+    # Rule 8: clamp lineseg textpos so the edited paragraph stays valid.
+    _clamp_paragraph_linesegs(paragraph)
