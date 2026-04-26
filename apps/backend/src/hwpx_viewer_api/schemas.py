@@ -230,3 +230,111 @@ class ParagraphResponse(BaseModel):
     """
     length: int
     text: str
+
+
+# ============================================================
+#  Document generation (Phase 1) — Claude plans, backend dispatches
+# ============================================================
+#
+# Claude is restricted to text-out + JSON. It emits a ``DocumentPlan`` which
+# the backend translates into pyhwpxlib calls. This decouples model output
+# from runtime side effects: the model never executes Bash and never touches
+# the filesystem. See ``services/plan_dispatcher.py``.
+
+Intent = Literal["new_doc", "gongmun", "form_fill", "edit", "convert"]
+ThemeName = Literal[
+    "default", "forest", "warm_executive", "ocean_analytics", "coral_energy",
+    "charcoal_minimal", "teal_trust", "berry_cream", "sage_calm", "cherry_bold",
+]
+
+
+class PlanBlockHeading(BaseModel):
+    type: Literal["heading"] = "heading"
+    level: int = Field(default=1, ge=1, le=6)
+    text: str = Field(min_length=1)
+
+
+class PlanBlockParagraph(BaseModel):
+    type: Literal["paragraph"] = "paragraph"
+    text: str = Field(default="")
+    bold: bool | None = None
+    italic: bool | None = None
+    font_size: int | None = None
+    alignment: Literal["LEFT", "CENTER", "RIGHT", "JUSTIFY"] | None = None
+
+
+class PlanBlockSpacer(BaseModel):
+    type: Literal["spacer"] = "spacer"
+
+
+class PlanBlockTable(BaseModel):
+    type: Literal["table"] = "table"
+    headers: list[str] | None = None
+    rows: list[list[str]] = Field(default_factory=list)
+
+
+class PlanBlockBullet(BaseModel):
+    type: Literal["bullet_list"] = "bullet_list"
+    items: list[str] = Field(default_factory=list)
+
+
+class PlanBlockNumbered(BaseModel):
+    type: Literal["numbered_list"] = "numbered_list"
+    items: list[str] = Field(default_factory=list)
+
+
+PlanBlock = (
+    PlanBlockHeading
+    | PlanBlockParagraph
+    | PlanBlockSpacer
+    | PlanBlockTable
+    | PlanBlockBullet
+    | PlanBlockNumbered
+)
+
+
+class GongmunSigner(BaseModel):
+    """기안자/결재권자 정보."""
+    직위: str | None = None
+    이름: str | None = None
+    전결: bool = False
+    서명일자: str | None = None
+
+
+class GongmunSpec(BaseModel):
+    """공문(기안문) 전용 필드. ``intent == 'gongmun'`` 일 때만 채워진다."""
+    기관명: str | None = None
+    수신: str | None = None
+    제목: str | None = None
+    본문: list[str] = Field(default_factory=list)
+    붙임: list[str] = Field(default_factory=list)
+    발신명의: str | None = None
+    기안자: GongmunSigner | None = None
+    결재권자: GongmunSigner | None = None
+    시행_처리과명: str | None = None
+    시행_일련번호: str | None = None
+    시행일: str | None = None
+    우편번호: str | None = None
+    도로명주소: str | None = None
+    전화: str | None = None
+    공개구분: str | None = None
+
+
+class DocumentPlan(BaseModel):
+    """Claude → backend plan. Backend dispatches via plan_dispatcher."""
+    intent: Intent = "new_doc"
+    theme: ThemeName | str = "default"
+    title: str | None = None
+    blocks: list[PlanBlock] = Field(default_factory=list)
+    gongmun: GongmunSpec | None = None
+
+
+class GenerateStartRequest(BaseModel):
+    """Frontend → backend kickoff."""
+    intent: Intent = "new_doc"
+    theme: ThemeName | str | None = None  # optional hint; Claude may override
+    prompt: str = Field(min_length=1, max_length=20_000)
+
+
+class GenerateStartResponse(BaseModel):
+    jobId: str

@@ -24,6 +24,7 @@ const ACTION_LABEL: Record<InlineActionId, string> = {
   rewrite: '다시 쓰기',
   shorten: '간결하게',
   translate: '영어로',
+  manual: '직접 수정',
 };
 
 export interface InlineAiTarget {

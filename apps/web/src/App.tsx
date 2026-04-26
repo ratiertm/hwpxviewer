@@ -14,10 +14,14 @@ import {
   applyEdit,
   downloadUrl,
   fetchPageSvg,
+  revealInFinder,
+  saveDocument,
+  type SaveResult,
   undoEdit,
   uploadHwpx,
 } from '@/api/document';
 import { ChatPanel } from '@/components/chat/ChatPanel';
+import { GenerateModal } from '@/components/generate/GenerateModal';
 import { HistoryPanel } from '@/components/history/HistoryPanel';
 import { FloatingDock } from '@/components/layout/FloatingDock';
 import { StatusBar } from '@/components/layout/StatusBar';
@@ -26,10 +30,11 @@ import { InlineSelectionMenu } from '@/components/inline/InlineSelectionMenu';
 import { InlineLoadingBlock } from '@/components/inline/InlineLoadingBlock';
 import { InlineErrorBlock } from '@/components/inline/InlineErrorBlock';
 import { InlineCherryPickDiff } from '@/components/inline/InlineCherryPickDiff';
+import { InlineManualEdit } from '@/components/inline/InlineManualEdit';
 import { useInlineAi } from '@/hooks/useInlineAi';
 import { useSelection } from '@/hooks/useSelection';
 import { useViewerStore } from '@/state/store';
-import { GitBranch, MessageSquare } from 'lucide-react';
+import { Check, FolderOpen, GitBranch, MessageSquare, Save, Sparkles } from 'lucide-react';
 import type { DocumentInfo, HistoryEntry } from '@/types';
 
 interface LoadedDoc {
@@ -69,6 +74,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedToast, setSavedToast] = useState<SaveResult | null>(null);
   const [activePage, setActivePage] = useState(0);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [editBusy, setEditBusy] = useState(false);
@@ -163,10 +171,75 @@ export default function App() {
     [handleFile],
   );
 
+  /** Called by GenerateModal when SSE emits step="done". The uploadId is
+   *  already registered server-side, so we just fetch SVGs and reuse the
+   *  same store path as drag-drop upload. */
+  const handleGenerated = useCallback(
+    async (uploadId: string, fileName: string, pageCount: number) => {
+      setBusy(true);
+      setError(null);
+      setHistory([]);
+      selection.clear();
+      setEditing(null);
+      closeMenu();
+      try {
+        const info: DocumentInfo = {
+          uploadId,
+          fileName,
+          fileSize: 0,
+          pageCount,
+          version: 0,
+        };
+        const svgs = await loadAllPages(info);
+        setDoc({ info, svgs });
+        setDocumentInStore(info, svgs);
+        setGenerateOpen(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadAllPages, selection, setEditing, closeMenu, setDocumentInStore],
+  );
+
   const onDownload = useCallback(() => {
     if (!doc) return;
-    window.location.href = downloadUrl(doc.info.uploadId);
+    // Pass version so the URL changes after every edit — guarantees a fresh
+    // server fetch even if the browser cached an earlier download.
+    window.location.href = downloadUrl(doc.info.uploadId, doc.info.version);
   }, [doc]);
+
+  /**
+   * Server-side save. Bypasses every browser-download caching trap because
+   * the server writes the file directly to ``~/Documents/HwpxViewer/`` with
+   * a deterministic, version-suffixed name. Toast surfaces the absolute
+   * path + a "Finder 에서 보기" action.
+   */
+  const onSave = useCallback(async () => {
+    if (!doc) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await saveDocument(doc.info.uploadId);
+      setSavedToast(result);
+      window.setTimeout(() => setSavedToast((cur) => (cur === result ? null : cur)), 8000);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [doc]);
+
+  const onRevealSaved = useCallback(async () => {
+    if (!savedToast) return;
+    try {
+      await revealInFinder(savedToast.path);
+    } catch (e) {
+      // Non-fatal — the path is already in the toast for manual access.
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [savedToast]);
 
   // ----- edit/undo pipeline ------------------------------------------------
 
@@ -194,7 +267,12 @@ export default function App() {
             ? '다시 쓰기'
             : inlineEditing.action === 'shorten'
               ? '간결하게'
-              : '영어로';
+              : inlineEditing.action === 'translate'
+                ? '영어로'
+                : '직접 수정';
+        // Manual edits don't get the "AI:" prefix — they're user-typed.
+        const historyAction =
+          inlineEditing.action === 'manual' ? actionLabel : `AI: ${actionLabel}`;
         setHistory((prev) => [
           {
             id: result.editId,
@@ -202,7 +280,7 @@ export default function App() {
             selection: selection.active!.selection,
             oldText: selection.active!.text,
             newText: finalText,
-            action: `AI: ${actionLabel}`,
+            action: historyAction,
             undone: false,
           },
           ...prev,
@@ -362,8 +440,18 @@ export default function App() {
               {doc.info.pageCount}페이지 · v{doc.info.version}
             </span>
             <button
+              onClick={() => void onSave()}
+              disabled={saving}
+              title="~/Documents/HwpxViewer/ 에 직접 저장"
+              className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-50"
+            >
+              <Save size={12} />
+              {saving ? '저장 중…' : '저장'}
+            </button>
+            <button
               onClick={onDownload}
-              className="px-3 py-1 rounded-md bg-accent text-white hover:opacity-90"
+              title="브라우저 다운로드"
+              className="px-3 py-1 rounded-md border border-border text-text-muted hover:bg-bg-muted text-xs"
             >
               다운로드
             </button>
@@ -386,6 +474,14 @@ export default function App() {
             >
               <MessageSquare size={12} />
               AI
+            </button>
+            <button
+              onClick={() => setGenerateOpen(true)}
+              title="AI로 새 한글 문서 생성"
+              className="flex items-center gap-1.5 px-3 py-1 rounded-md border border-border text-text-muted hover:bg-bg-muted text-xs"
+            >
+              <Sparkles size={12} />
+              AI 새 문서
             </button>
             <button
               onClick={() => {
@@ -428,13 +524,23 @@ export default function App() {
             <div className="text-xs text-text-muted mb-6">
               rhwp WASM이 서버에서 SVG로 렌더링하고, 드래그로 텍스트를 선택해 AI와 편집할 수 있습니다.
             </div>
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={busy}
-              className="px-4 py-2 rounded-md bg-accent text-white font-medium disabled:opacity-50"
-            >
-              {busy ? '업로드 중…' : '파일 선택'}
-            </button>
+            <div className="flex items-center justify-center gap-2">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={busy}
+                className="px-4 py-2 rounded-md bg-accent text-white font-medium disabled:opacity-50"
+              >
+                {busy ? '업로드 중…' : '파일 선택'}
+              </button>
+              <button
+                onClick={() => setGenerateOpen(true)}
+                disabled={busy}
+                className="px-4 py-2 rounded-md border border-border text-text-strong font-medium hover:bg-bg-muted disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <Sparkles size={14} />
+                AI로 새 문서
+              </button>
+            </div>
             <input
               ref={fileInputRef}
               type="file"
@@ -548,7 +654,25 @@ export default function App() {
             {inlineMenu && !inlineEditing && (
               <InlineSelectionMenu
                 anchor={inlineMenu}
-                onAction={(id, guide) => void inlineAi.begin(id, guide)}
+                onAction={(id, guide) => {
+                  // "직접 수정" — skip Claude. Drop straight into a ready
+                  // state pre-filled with the original text; the user types
+                  // their replacement and clicks 적용. The same
+                  // ``acceptInlineEdit`` path commits the edit + history.
+                  if (id === 'manual') {
+                    if (!selection.active) return;
+                    useViewerStore.getState().setEditing({
+                      selection: selection.active.selection,
+                      original: selection.active.text,
+                      suggestion: selection.active.text,
+                      action: 'manual',
+                      status: 'ready',
+                    });
+                    closeMenu();
+                    return;
+                  }
+                  void inlineAi.begin(id, guide);
+                }}
                 onAttachToChat={() => {
                   if (selection.active) {
                     useViewerStore
@@ -580,7 +704,15 @@ export default function App() {
                     onClose={() => setEditing(null)}
                   />
                 )}
-                {inlineEditing.status === 'ready' && (
+                {inlineEditing.status === 'ready' && inlineEditing.action === 'manual' && (
+                  <InlineManualEdit
+                    original={inlineEditing.original}
+                    busy={editBusy}
+                    onAccept={(finalText) => void acceptInlineEdit(finalText)}
+                    onCancel={rejectInlineEdit}
+                  />
+                )}
+                {inlineEditing.status === 'ready' && inlineEditing.action !== 'manual' && (
                   <InlineCherryPickDiff
                     original={inlineEditing.original}
                     suggestion={inlineEditing.suggestion}
@@ -640,6 +772,66 @@ export default function App() {
             version={doc.info.version}
           />
         </>
+      )}
+
+      {generateOpen && (
+        <GenerateModal
+          onClose={() => setGenerateOpen(false)}
+          onDone={(uploadId, fileName, pageCount) =>
+            void handleGenerated(uploadId, fileName, pageCount)
+          }
+        />
+      )}
+
+      {savedToast && (
+        <div
+          className="fixed top-16 right-4 z-30 max-w-md rounded-lg border shadow-xl backdrop-blur-xl"
+          style={{ backgroundColor: 'var(--bg-panel)', borderColor: 'var(--accent)' }}
+          role="status"
+        >
+          <div className="px-4 py-3 flex items-start gap-3">
+            <div
+              className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
+              style={{ backgroundColor: 'rgba(52,211,153,0.15)' }}
+            >
+              <Check size={14} style={{ color: '#34d399' }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div
+                className="text-sm font-medium"
+                style={{ color: 'var(--text-strong)' }}
+              >
+                저장 완료 (v{savedToast.version} · {savedToast.edits}편집 · {Math.round(savedToast.fileSize / 1024)}KB)
+              </div>
+              <div
+                className="text-[11px] mt-1 break-all font-mono"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                {savedToast.path}
+              </div>
+              <div className="flex items-center gap-2 mt-2">
+                <button
+                  onClick={() => void onRevealSaved()}
+                  className="flex items-center gap-1 px-2 py-1 rounded text-xs hover:bg-bg-muted appearance-none"
+                  style={{
+                    color: 'var(--accent)',
+                    border: '1px solid var(--accent)',
+                  }}
+                >
+                  <FolderOpen size={11} />
+                  Finder 에서 보기
+                </button>
+                <button
+                  onClick={() => setSavedToast(null)}
+                  className="text-xs px-2 py-1 hover:bg-bg-muted rounded appearance-none"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  닫기
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

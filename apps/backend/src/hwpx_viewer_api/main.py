@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .config import get_settings
-from .routes import claude, download, edit, health, hit_test, render, upload
+from .routes import claude, download, edit, generate, health, hit_test, render, save, upload
 from .security.cors import install_cors
 
 
@@ -47,6 +47,10 @@ def create_app() -> FastAPI:
     app.include_router(hit_test.router)
     # M6R — edit + undo.
     app.include_router(edit.router)
+    # Phase 1 — AI document generation (hwpx skill guide → JSON plan → pyhwpxlib).
+    app.include_router(generate.router)
+    # Local "Save to disk" — bypasses browser download cache pitfalls.
+    app.include_router(save.router)
 
     return app
 

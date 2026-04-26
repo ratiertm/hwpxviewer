@@ -21,6 +21,22 @@
 
 export type ThemeName = 'dark' | 'light';
 
+/** AI generation intents — see backend skills/hwpx_guide.py. */
+export type Intent = 'new_doc' | 'gongmun' | 'form_fill' | 'edit' | 'convert';
+
+/** hwpx skill theme palette (10 built-ins). */
+export type HwpxTheme =
+  | 'default'
+  | 'forest'
+  | 'warm_executive'
+  | 'ocean_analytics'
+  | 'coral_energy'
+  | 'charcoal_minimal'
+  | 'teal_trust'
+  | 'berry_cream'
+  | 'sage_calm'
+  | 'cherry_bold';
+
 export interface Theme {
   bg: string;
   bgSubtle: string;
@@ -184,7 +200,8 @@ export interface Message {
 //  Inline editing state machine (M6R/M7R)
 // ============================================================
 
-export type InlineActionId = 'rewrite' | 'shorten' | 'translate';
+/** AI actions go through Claude. ``manual`` skips Claude — user types freely. */
+export type InlineActionId = 'rewrite' | 'shorten' | 'translate' | 'manual';
 
 export interface InlineAction {
   id: InlineActionId;

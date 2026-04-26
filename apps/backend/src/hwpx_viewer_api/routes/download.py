@@ -55,13 +55,34 @@ async def download(upload_id: str) -> Response:
             },
         ) from e
 
+    # Version + edit count come from the live session, not the upload_store
+    # entry (which is set once at put() time). The header values must reflect
+    # what's actually in ``data`` so users can spot stale-file confusion.
+    live_edits = [e for e in entry.session.edits if not e["undone"]]
+    edit_n = len(live_edits)
+    version = int(entry.session.version)
+
+    # Suffix the filename with version+edits so the OS treats every download
+    # as a distinct file. This sidesteps "Hancom Office still has the old
+    # file open" / "Downloads folder kept the old (1).hwpx" confusion.
     stem = entry.file_name.rsplit(".", 1)[0] or "document"
-    out_name = f"{stem} (수정본).hwpx"
+    suffix = f" (수정본 v{version}-{edit_n}편집)"
+    out_name = f"{stem}{suffix}.hwpx"
     quoted = urllib.parse.quote(out_name)
 
     return Response(
         content=data,
         media_type="application/vnd.hancom.hwpx",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            # Prevent the browser from serving a stale post-edit cache when
+            # the user downloads after applying further edits.
+            "Cache-Control": "no-store, must-revalidate",
+            "Pragma": "no-cache",
+            # Surface server-side state so the browser/devtools can verify
+            # they got the live version, not a cached pre-edit copy.
+            "X-HwpxViewer-Version": str(version),
+            "X-HwpxViewer-Edits": str(edit_n),
+        },
     )
 

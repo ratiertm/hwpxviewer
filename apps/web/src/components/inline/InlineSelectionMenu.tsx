@@ -7,7 +7,7 @@
  * (client pixel coords of the selection's top-center).
  */
 
-import { Languages, MessageSquarePlus, Minimize, Pencil, Sparkles, X } from 'lucide-react';
+import { Edit3, Languages, MessageSquarePlus, Minimize, Pencil, Sparkles, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { InlineAction, InlineActionId } from '@/types';
@@ -231,6 +231,21 @@ export function InlineSelectionMenu({ anchor, onAction, onAttachToChat, onClose 
             </button>
           );
         })}
+        <div className="w-px h-4" style={{ backgroundColor: 'var(--border-subtle)' }} />
+        {/* "직접 수정" — skip Claude entirely, type your own replacement. */}
+        <button
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onAction('manual');
+          }}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs hover:bg-bg-muted appearance-none"
+          style={{ color: 'var(--text-muted)' }}
+          title="AI 거치지 않고 직접 입력해 수정"
+        >
+          <Edit3 size={11} />
+          직접 수정
+        </button>
         <div className="w-px h-4" style={{ backgroundColor: 'var(--border-subtle)' }} />
         {/* "대화로" — attach selection to chat instead of running an auto-rewrite. */}
         <button

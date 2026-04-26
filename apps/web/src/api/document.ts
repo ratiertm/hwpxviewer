@@ -69,8 +69,39 @@ export async function uploadHwpx(file: File): Promise<DocumentInfo> {
   return body.document;
 }
 
-export function downloadUrl(uploadId: string): string {
-  return `${API_BASE}/api/download/${uploadId}`;
+export function downloadUrl(uploadId: string, version?: number): string {
+  // ``version`` is appended as a cache-buster so the browser can never serve
+  // a stale pre-edit download. The backend ignores the param.
+  const bust = version !== undefined ? `?v=${version}&t=${Date.now()}` : `?t=${Date.now()}`;
+  return `${API_BASE}/api/download/${uploadId}${bust}`;
+}
+
+// --- Server-side save (preferred over downloadUrl on local installs) ----
+
+export interface SaveResult {
+  path: string;
+  fileName: string;
+  fileSize: number;
+  version: number;
+  edits: number;
+}
+
+export async function saveDocument(
+  uploadId: string,
+  overwrite = false,
+): Promise<SaveResult> {
+  return await jsonFetch<SaveResult>('/api/save', {
+    method: 'POST',
+    body: JSON.stringify({ uploadId, overwrite }),
+  });
+}
+
+export async function revealInFinder(path: string): Promise<boolean> {
+  const body = await jsonFetch<{ ok: boolean }>('/api/reveal', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  });
+  return body.ok;
 }
 
 // --- Render -------------------------------------------------------------
