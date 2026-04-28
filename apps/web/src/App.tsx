@@ -37,7 +37,7 @@ import { InlineManualEdit } from '@/components/inline/InlineManualEdit';
 import { useInlineAi } from '@/hooks/useInlineAi';
 import { useSelection } from '@/hooks/useSelection';
 import { useViewerStore } from '@/state/store';
-import { Check, FolderOpen, GitBranch, MessageSquare, Save, Sparkles } from 'lucide-react';
+import { Check, FolderOpen, GitBranch, MessageSquare, Save, Settings, Sparkles } from 'lucide-react';
 import type { DocumentInfo, HistoryEntry } from '@/types';
 
 interface LoadedDoc {
@@ -586,17 +586,47 @@ export default function App() {
                     }
                   }}
                   title="클릭: 페이지 이동 · Shift+클릭: 페이지 전체 선택"
+                  style={{ position: 'relative' }}
                   className={`w-full group flex flex-col items-stretch rounded border overflow-hidden transition-colors ${
                     activePage === i
                       ? 'border-accent ring-2 ring-accent/30'
                       : 'border-border hover:border-text-muted'
                   }`}
                 >
-                  <div className="bg-white aspect-[1/1.414] overflow-hidden flex items-center justify-center">
+                  <div className="bg-white aspect-[1/1.414] overflow-hidden flex items-center justify-center relative group">
                     <div
                       className="w-full h-full [&>svg]:w-full [&>svg]:h-full pointer-events-none"
                       dangerouslySetInnerHTML={{ __html: mini }}
                     />
+                    {/* Page-settings button — overlays the thumbnail's top-right
+                        corner. Hover reveals it; always visible when this page
+                        is active so it's easier to discover. */}
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      title="페이지 설정 (가로방향 / 여백 등)"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        if (!doc) return;
+                        try {
+                          const defn = await getPageDef(doc.info.uploadId, i);
+                          setPageSettingsFor({ pageIndex: i, defn });
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : String(err));
+                        }
+                      }}
+                      className={`absolute top-1 right-1 w-7 h-7 rounded-md flex items-center justify-center cursor-pointer transition-opacity shadow-md ${
+                        activePage === i ? 'opacity-90' : 'opacity-0 group-hover:opacity-90'
+                      }`}
+                      style={{
+                        backgroundColor: 'var(--bg-panel)',
+                        border: '1px solid var(--border)',
+                        color: 'var(--text-strong)',
+                      }}
+                    >
+                      <Settings size={14} />
+                    </span>
                   </div>
                   <div
                     className={`px-2 py-1 text-[10px] tabular-nums text-left flex justify-between ${
@@ -604,27 +634,7 @@ export default function App() {
                     }`}
                   >
                     <span>Page {i + 1}</span>
-                    <div className="flex items-center gap-1">
-                      <span>{Math.round((doc.svgs[i]?.length ?? 0) / 1024)}KB</span>
-                      <span
-                        role="button"
-                        title="페이지 설정"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          if (!doc) return;
-                          try {
-                            const defn = await getPageDef(doc.info.uploadId, i);
-                            setPageSettingsFor({ pageIndex: i, defn });
-                          } catch (err) {
-                            setError(err instanceof Error ? err.message : String(err));
-                          }
-                        }}
-                        className="px-1 hover:opacity-100 opacity-50 cursor-pointer"
-                        style={{ color: 'var(--text-muted)' }}
-                      >
-                        ⚙
-                      </span>
-                    </div>
+                    <span>{Math.round((doc.svgs[i]?.length ?? 0) / 1024)}KB</span>
                   </div>
                 </button>
               ))}
