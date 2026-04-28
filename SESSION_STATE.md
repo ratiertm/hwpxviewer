@@ -5,14 +5,14 @@
 ## 최근 커밋 (origin/main 기준)
 
 ```
+6841c6a fix(web): #28 Shift+click 페이지 선택 4중 픽스
+4e00a90 chore: SESSION_STATE.md — Phase 2.6 (E) 진행 반영
 d88138e feat: Phase 2.6 (E) — placeholder 단락 삽입
 0607bc9 chore: SESSION_STATE.md — pre-compact snapshot
 fa28800 fix(web): page-settings gear — visible overlay
-fa11618 feat(web): Phase 2.5 (D) — page settings panel
-7c1a7d1 feat(web): Phase 2.2 (C) — page-level multi-select via Shift+click
 ```
 
-`d88138e` 미푸시 가능성 — 다음 세션 시작시 `git push origin main` 한 번 확인.
+origin/main 푸시 완료 (6841c6a).
 
 ## 완료된 작업 (Phase 2 진행률)
 
@@ -27,14 +27,13 @@ fa11618 feat(web): Phase 2.5 (D) — page settings panel
 
 ## 대기 중인 Task (다음 세션 우선순위)
 
-### #28 [HIGH] BUG: Shift+클릭 페이지 다중선택 동작 안함
-- 사용자 보고: thumbnail Shift+클릭 시 selectPage 호출이 트리거 안 되거나 시각적 피드백 없음
-- 진단 후보 4가지 (task description 참조):
-  1. React 합성이벤트의 e.shiftKey 미수신 → onMouseDown 으로 전환
-  2. useSelection.ts 의 dynamic import('@/api/document') 가 HMR 환경에서 깨짐 → 정적 import
-  3. 백엔드 호출 에러가 silent (toast 미노출)
-  4. cross-paragraph rect 빈 응답
-- 진단 시작: 브라우저 DevTools → `__lastSelection` 객체 + Network 탭 `/api/pages/...` 호출 여부
+### #28 [DONE — 검증 대기] Shift+클릭 페이지 다중선택
+- 6841c6a 에서 4가지 원인 동시 픽스: dynamic import 제거, onClick→onMouseDown,
+  silent error 가시화, jumpToPage 동시 호출
+- **사용자 검증 필요**: Cmd+Shift+R 로 새로고침 → 사이드바 thumbnail Shift+클릭 →
+  해당 페이지로 스크롤되면서 indigo 사각형 + AI 메뉴 노출 확인
+- 만약 여전히 동작 안 하면 DevTools Console 의 `[selection.page]` 로그 + Network
+  탭 `/api/selection-rects` 응답 확인
 
 ### #27 [MEDIUM] 한컴오피스 2022 보안경고 미발생 검증
 - 사용자(Lee Eun Mi) 환경에서만 가능한 검증
