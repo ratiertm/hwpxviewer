@@ -1,18 +1,18 @@
-# HwpxViewer — Session State (2026-04-29 마감 시점)
+# HwpxViewer — Session State (2026-04-29 갱신)
 
-다음 세션 시작 시 먼저 이 파일을 읽으세요. compact 전 마지막 스냅샷.
+다음 세션 시작 시 먼저 이 파일을 읽으세요.
 
-## 최근 커밋 (origin/main 기준 마지막 5개)
+## 최근 커밋 (origin/main 기준)
 
 ```
-fa28800 fix(web): page-settings gear — visible overlay on thumbnail corner
+d88138e feat: Phase 2.6 (E) — placeholder 단락 삽입
+0607bc9 chore: SESSION_STATE.md — pre-compact snapshot
+fa28800 fix(web): page-settings gear — visible overlay
 fa11618 feat(web): Phase 2.5 (D) — page settings panel
 7c1a7d1 feat(web): Phase 2.2 (C) — page-level multi-select via Shift+click
-a3c71bf feat(backend): Phase 2 page-level routes (boundaries + page-def)
-2361ecd fix(hwpx_patcher): Rule 8 — clamp lineseg textpos after edits
 ```
 
-`fa28800` 까지는 푸시 안 했을 수 있음 — 다음 세션 시작시 `git push origin main` 한 번 확인.
+`d88138e` 미푸시 가능성 — 다음 세션 시작시 `git push origin main` 한 번 확인.
 
 ## 완료된 작업 (Phase 2 진행률)
 
@@ -22,6 +22,8 @@ a3c71bf feat(backend): Phase 2 page-level routes (boundaries + page-def)
 | #22 | Phase 2.2 (C) — 사이드바 Shift+클릭 → useSelection.selectPage | ✅ (단, BUG #28 보고됨) |
 | #23 | Phase 2.5 (D) — 페이지 설정 패널 (PageSettingsPanel + ⚙ 버튼) | ✅ |
 | #26 | Rule 8 — hwpx_patcher 가 lineseg textpos 자동 clamp (한컴 보안경고 회피) | ✅ |
+| #29 | Phase 2.6 (E) — placeholder 단락 삽입 backend (POST /api/paragraphs/insert, rhwp split+insert+merge, hwpx_patcher kind="insert_paragraph") | ✅ |
+| #30 | Phase 2.6 (E) — placeholder 단락 삽입 frontend (InlineSelectionMenu "단락 추가" 버튼 + App.tsx 핸들러) | ✅ |
 
 ## 대기 중인 Task (다음 세션 우선순위)
 
@@ -78,7 +80,11 @@ ls /Users/leeeunmi/Projects/active/HwpxViewer/전문가활용내역서_채움.hw
 | useSelection.selectPage | `apps/web/src/hooks/useSelection.ts` (line 358 부근) |
 | 페이지 설정 패널 | `apps/web/src/components/page-settings/PageSettingsPanel.tsx` |
 | Page-settings ⚙ 버튼 | `apps/web/src/App.tsx` (sidebar thumbnail overlay) |
-| API 클라이언트 | `apps/web/src/api/document.ts` (getPageBoundary, getPageDef, updatePageDef) |
+| API 클라이언트 | `apps/web/src/api/document.ts` (getPageBoundary, getPageDef, updatePageDef, insertParagraph) |
+| 단락 삽입 (rhwp) | `apps/backend/.../services/rhwp_wasm.py` (split_paragraph, merge_paragraph, insert_paragraph) |
+| 단락 삽입 (XML) | `apps/backend/.../services/hwpx_patcher.py` (`_apply_insert_paragraph`, `_build_empty_paragraph_clone`) |
+| 단락 삽입 라우트 | `apps/backend/.../routes/edit.py` (POST /api/paragraphs/insert) |
+| "단락 추가" 버튼 | `apps/web/src/components/inline/InlineSelectionMenu.tsx` (onInsertParagraph prop) |
 
 ## 알려진 디자인 결정
 
@@ -96,6 +102,9 @@ ls /Users/leeeunmi/Projects/active/HwpxViewer/전문가활용내역서_채움.hw
 ## 다음 세션 추천 순서
 
 1. **#28 BUG fix** (1-2시간) — Shift+클릭 동작 확인 및 수정
-2. **#27 한컴 2022 검증** (사용자 측, 5분) — 모달 미발생 확인
-3. **#24 Phase 2.3 (A) AI rewrite** (반나절)
-4. **#25 Phase 2.4 (B) CRUD** (1일+)
+2. **Phase 2.6 (E) 사용자 검증** — "단락 추가" 버튼 실사용해보고 placeholder UX
+   리파인 (e.g. 자동 InlineManualEdit 진입, 시각적 hint)
+3. **#27 한컴 2022 검증** (사용자 측, 5분) — 모달 미발생 확인
+4. **#24 Phase 2.3 (A) AI rewrite** (반나절)
+5. **#25 Phase 2.4 (B) CRUD** (1일+) — 이미 backend의 split/merge/insert가
+   있어 delete/duplicate/reorder는 이를 재활용하면 빠름
