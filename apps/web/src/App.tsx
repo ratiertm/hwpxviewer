@@ -572,7 +572,16 @@ export default function App() {
               {miniSvgs.map((mini, i) => (
                 <button
                   key={i}
-                  onClick={() => jumpToPage(i)}
+                  onClick={(e) => {
+                    if (e.shiftKey) {
+                      // Shift+click → select all paragraphs on this page
+                      // (Phase 2.2 page-level multi-select).
+                      void selection.selectPage(i);
+                    } else {
+                      jumpToPage(i);
+                    }
+                  }}
+                  title="클릭: 페이지 이동 · Shift+클릭: 페이지 전체 선택"
                   className={`w-full group flex flex-col items-stretch rounded border overflow-hidden transition-colors ${
                     activePage === i
                       ? 'border-accent ring-2 ring-accent/30'

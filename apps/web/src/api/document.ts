@@ -76,6 +76,24 @@ export function downloadUrl(uploadId: string, version?: number): string {
   return `${API_BASE}/api/download/${uploadId}${bust}`;
 }
 
+// --- Page-level operations (Phase 2) ------------------------------------
+
+export interface PageBoundary {
+  index: number;
+  sec: number;
+  paraStart: number;
+  paraEnd: number;
+  paragraphCount: number;
+}
+
+export async function getPageBoundary(
+  uploadId: string,
+  pageIndex: number,
+): Promise<PageBoundary> {
+  const body = await jsonFetch<{ page: PageBoundary }>(`/api/pages/${uploadId}/${pageIndex}`);
+  return body.page;
+}
+
 // --- Server-side save (preferred over downloadUrl on local installs) ----
 
 export interface SaveResult {

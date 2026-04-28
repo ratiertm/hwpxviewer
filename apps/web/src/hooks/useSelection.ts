@@ -34,7 +34,7 @@ interface ActiveSelection {
   rects: SelectionRect[];
   /** "paragraph" for single-click, "range" for shift-drag. Helps the UI hint
    *  the user about which mode produced the current highlight. */
-  mode: 'paragraph' | 'range';
+  mode: 'paragraph' | 'range' | 'page';
 }
 
 interface PendingDrag {
@@ -125,6 +125,8 @@ export interface UseSelectionApi {
   /** Re-run rects + text-range for the current selection (after an edit
    *  shifts content). */
   refresh: () => Promise<void>;
+  /** Select all paragraphs on a single page (Phase 2.2 — sidebar Shift+click). */
+  selectPage: (pageIndex: number) => Promise<void>;
 }
 
 export function useSelection(uploadId: string | null): UseSelectionApi {
@@ -349,5 +351,40 @@ export function useSelection(uploadId: string | null): UseSelectionApi {
     }
   }, [uploadId, active]);
 
-  return { active, busy, error, preview, beginDrag, clear, refresh };
+  const selectPage = useCallback(
+    async (pageIndex: number) => {
+      if (!uploadId) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const { getPageBoundary, getParagraph } = await import('@/api/document');
+        const boundary = await getPageBoundary(uploadId, pageIndex);
+        const lastPara = await getParagraph(uploadId, boundary.sec, boundary.paraEnd, null);
+        const selection: Selection =
+          boundary.paraStart === boundary.paraEnd
+            ? {
+                start: { sec: boundary.sec, para: boundary.paraStart, charOffset: 0, cell: null },
+                length: lastPara.length,
+              }
+            : {
+                start: { sec: boundary.sec, para: boundary.paraStart, charOffset: 0, cell: null },
+                end: { sec: boundary.sec, para: boundary.paraEnd, charOffset: lastPara.length, cell: null },
+                length: 0,
+              };
+        const [rects, text] = await Promise.all([
+          getSelectionRects(uploadId, selection),
+          getTextRange(uploadId, selection),
+        ]);
+        setActive({ page: pageIndex, selection, rects, text, mode: 'page' });
+      } catch (e) {
+        const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
+        setError(msg);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [uploadId],
+  );
+
+  return { active, busy, error, preview, beginDrag, clear, refresh, selectPage };
 }
