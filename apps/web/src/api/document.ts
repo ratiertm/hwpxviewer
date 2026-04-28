@@ -94,6 +94,46 @@ export async function getPageBoundary(
   return body.page;
 }
 
+export interface PageDef {
+  width: number;
+  height: number;
+  marginLeft: number;
+  marginRight: number;
+  marginTop: number;
+  marginBottom: number;
+  marginHeader: number;
+  marginFooter: number;
+  marginGutter: number;
+  landscape: boolean;
+  binding: number;
+}
+
+export async function getPageDef(
+  uploadId: string,
+  pageIndex: number,
+): Promise<PageDef> {
+  const body = await jsonFetch<{ pageDef: PageDef }>(`/api/pages/${uploadId}/${pageIndex}`);
+  return body.pageDef;
+}
+
+export interface PageDefUpdateResult {
+  ok: boolean;
+  pageDef: PageDef;
+  version: number;
+  pageCount: number;
+}
+
+export async function updatePageDef(
+  uploadId: string,
+  pageIndex: number,
+  patch: Partial<PageDef>,
+): Promise<PageDefUpdateResult> {
+  return await jsonFetch<PageDefUpdateResult>(
+    `/api/pages/${uploadId}/${pageIndex}/page-def`,
+    { method: 'POST', body: JSON.stringify(patch) },
+  );
+}
+
 // --- Server-side save (preferred over downloadUrl on local installs) ----
 
 export interface SaveResult {

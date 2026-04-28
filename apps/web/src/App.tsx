@@ -14,6 +14,8 @@ import {
   applyEdit,
   downloadUrl,
   fetchPageSvg,
+  getPageDef,
+  type PageDef,
   revealInFinder,
   saveDocument,
   type SaveResult,
@@ -22,6 +24,7 @@ import {
 } from '@/api/document';
 import { ChatPanel } from '@/components/chat/ChatPanel';
 import { GenerateModal } from '@/components/generate/GenerateModal';
+import { PageSettingsPanel } from '@/components/page-settings/PageSettingsPanel';
 import { HistoryPanel } from '@/components/history/HistoryPanel';
 import { FloatingDock } from '@/components/layout/FloatingDock';
 import { StatusBar } from '@/components/layout/StatusBar';
@@ -77,6 +80,7 @@ export default function App() {
   const [generateOpen, setGenerateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedToast, setSavedToast] = useState<SaveResult | null>(null);
+  const [pageSettingsFor, setPageSettingsFor] = useState<{ pageIndex: number; defn: PageDef } | null>(null);
   const [activePage, setActivePage] = useState(0);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [editBusy, setEditBusy] = useState(false);
@@ -600,7 +604,27 @@ export default function App() {
                     }`}
                   >
                     <span>Page {i + 1}</span>
-                    <span>{Math.round((doc.svgs[i]?.length ?? 0) / 1024)}KB</span>
+                    <div className="flex items-center gap-1">
+                      <span>{Math.round((doc.svgs[i]?.length ?? 0) / 1024)}KB</span>
+                      <span
+                        role="button"
+                        title="페이지 설정"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (!doc) return;
+                          try {
+                            const defn = await getPageDef(doc.info.uploadId, i);
+                            setPageSettingsFor({ pageIndex: i, defn });
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : String(err));
+                          }
+                        }}
+                        className="px-1 hover:opacity-100 opacity-50 cursor-pointer"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        ⚙
+                      </span>
+                    </div>
                   </div>
                 </button>
               ))}
@@ -781,6 +805,31 @@ export default function App() {
             version={doc.info.version}
           />
         </>
+      )}
+
+      {pageSettingsFor && doc && (
+        <PageSettingsPanel
+          uploadId={doc.info.uploadId}
+          pageIndex={pageSettingsFor.pageIndex}
+          initial={pageSettingsFor.defn}
+          onClose={() => setPageSettingsFor(null)}
+          onApplied={async ({ pageCount, version }) => {
+            // pageCount may have changed (landscape flip can add/remove pages).
+            // Refetch all pages.
+            const newInfo: DocumentInfo = {
+              ...doc.info,
+              pageCount,
+              version,
+            };
+            try {
+              const svgs = await loadAllPages(newInfo, version);
+              setDoc({ info: newInfo, svgs });
+              setDocumentInStore(newInfo, svgs);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            }
+          }}
+        />
       )}
 
       {generateOpen && (
