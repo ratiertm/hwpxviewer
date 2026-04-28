@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .config import get_settings
-from .routes import claude, download, edit, generate, health, hit_test, render, save, upload
+from .routes import claude, download, edit, generate, health, hit_test, pages, render, save, upload
 from .security.cors import install_cors
 
 
@@ -51,6 +51,8 @@ def create_app() -> FastAPI:
     app.include_router(generate.router)
     # Local "Save to disk" — bypasses browser download cache pitfalls.
     app.include_router(save.router)
+    # Phase 2 — page-level operations (boundaries, page-def, CRUD).
+    app.include_router(pages.router)
 
     return app
 
