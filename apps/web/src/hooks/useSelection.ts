@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   ApiError,
+  getPageBoundary,
   getParagraph,
   getSelectionRects,
   getTextRange,
@@ -353,11 +354,17 @@ export function useSelection(uploadId: string | null): UseSelectionApi {
 
   const selectPage = useCallback(
     async (pageIndex: number) => {
-      if (!uploadId) return;
+      if (!uploadId) {
+        // eslint-disable-next-line no-console
+        console.warn('[selection.page] aborted: no uploadId');
+        return;
+      }
       setBusy(true);
       setError(null);
       try {
-        const { getPageBoundary, getParagraph } = await import('@/api/document');
+        // Static imports (was dynamic; HMR was breaking the chain after a
+        // page refresh). ``getPageBoundary`` lives on the same module as the
+        // already-imported ``getParagraph``.
         const boundary = await getPageBoundary(uploadId, pageIndex);
         const lastPara = await getParagraph(uploadId, boundary.sec, boundary.paraEnd, null);
         const selection: Selection =
@@ -375,10 +382,30 @@ export function useSelection(uploadId: string | null): UseSelectionApi {
           getSelectionRects(uploadId, selection),
           getTextRange(uploadId, selection),
         ]);
+        const debug = {
+          pageIndex,
+          boundary,
+          rectCount: rects.length,
+          rectPages: [...new Set(rects.map((r) => r.page))].sort(),
+          textLen: text.length,
+          textPreview: text.slice(0, 60),
+        };
+        // eslint-disable-next-line no-console
+        console.log('[selection.page]', debug);
+        (window as unknown as { __lastSelection: unknown }).__lastSelection = debug;
+        if (rects.length === 0) {
+          // Backend returned an empty rect list — common signal that the
+          // page is mostly blank (cover page, image-only page). Surface a
+          // user-visible hint instead of silently doing nothing.
+          setError(`페이지 ${pageIndex + 1}: 선택할 텍스트가 없습니다.`);
+          return;
+        }
         setActive({ page: pageIndex, selection, rects, text, mode: 'page' });
       } catch (e) {
         const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
-        setError(msg);
+        // eslint-disable-next-line no-console
+        console.error('[selection.page] failed:', e);
+        setError(`페이지 ${pageIndex + 1} 선택 실패: ${msg}`);
       } finally {
         setBusy(false);
       }

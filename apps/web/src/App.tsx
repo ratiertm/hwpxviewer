@@ -630,10 +630,22 @@ export default function App() {
               {miniSvgs.map((mini, i) => (
                 <button
                   key={i}
-                  onClick={(e) => {
+                  onMouseDown={(e) => {
+                    // ``onMouseDown`` (not onClick) for reliable shiftKey
+                    // detection: macOS sometimes drops the modifier on the
+                    // click event when the user releases shift before the
+                    // mouseup. Mousedown fires while the modifier is still
+                    // pressed.
+                    if (e.button !== 0) return;
                     if (e.shiftKey) {
-                      // Shift+click → select all paragraphs on this page
-                      // (Phase 2.2 page-level multi-select).
+                      e.preventDefault();
+                      // eslint-disable-next-line no-console
+                      console.log('[App] Shift+mousedown on thumbnail', i);
+                      // Always scroll to the target page first — without
+                      // this the rect highlight + inline menu would appear
+                      // off-screen and the user wouldn't notice anything
+                      // happened. Then run the selection.
+                      jumpToPage(i);
                       void selection.selectPage(i);
                     } else {
                       jumpToPage(i);
