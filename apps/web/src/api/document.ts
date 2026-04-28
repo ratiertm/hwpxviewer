@@ -241,6 +241,39 @@ export async function applyEdit(
   });
 }
 
+// --- Paragraph insertion (Phase 2.6 E) ----------------------------------
+
+export interface ParagraphInsertResult {
+  editId: number;
+  document: DocumentInfo;
+  affectedPages: number[];
+  newPara: number;
+  placeholder: string;
+}
+
+export async function insertParagraph(
+  uploadId: string,
+  sec: number,
+  para: number,
+  options: {
+    position?: 'before' | 'after';
+    placeholder?: string;
+    cell?: CellRef | null;
+  } = {},
+): Promise<ParagraphInsertResult> {
+  return await jsonFetch<ParagraphInsertResult>('/api/paragraphs/insert', {
+    method: 'POST',
+    body: JSON.stringify({
+      uploadId,
+      sec,
+      para,
+      position: options.position ?? 'after',
+      placeholder: options.placeholder ?? '[내용을 입력하세요]',
+      cell: options.cell ?? null,
+    }),
+  });
+}
+
 export async function undoEdit(uploadId: string, editId: number): Promise<EditResult> {
   return await jsonFetch<EditResult>('/api/undo', {
     method: 'POST',

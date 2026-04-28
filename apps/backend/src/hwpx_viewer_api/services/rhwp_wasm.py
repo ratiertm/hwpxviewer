@@ -639,6 +639,109 @@ class DocumentSession:
             "hwpdocument_deleteText", self._handle, sec, para, char_offset, count,
         ) or {}
 
+    # ----- paragraph structural ops (Phase 2.6) -------------------------
+
+    def split_paragraph(
+        self,
+        sec: int,
+        para: int,
+        char_offset: int,
+        cell: Optional[dict[str, int]] = None,
+    ) -> dict[str, Any]:
+        """Split paragraph ``para`` at ``char_offset``.
+
+        Result: prefix stays in ``para``; suffix moves to a new paragraph
+        at ``para+1``. ``char_offset == paraLen`` produces an empty trailing
+        paragraph (the placeholder-insert use case). ``char_offset == 0``
+        produces an empty leading paragraph at ``para``.
+        """
+        if cell is not None:
+            return self._call_json(
+                "hwpdocument_splitParagraphInCell",
+                self._handle, sec,
+                int(cell["parentParaIndex"]),
+                int(cell["controlIndex"]),
+                int(cell["cellIndex"]),
+                para, char_offset,
+            ) or {}
+        return self._call_json(
+            "hwpdocument_splitParagraph",
+            self._handle, sec, para, char_offset,
+        ) or {}
+
+    def merge_paragraph(
+        self,
+        sec: int,
+        para: int,
+        cell: Optional[dict[str, int]] = None,
+    ) -> dict[str, Any]:
+        """Merge paragraph ``para`` with the next paragraph (``para+1``)."""
+        if cell is not None:
+            return self._call_json(
+                "hwpdocument_mergeParagraphInCell",
+                self._handle, sec,
+                int(cell["parentParaIndex"]),
+                int(cell["controlIndex"]),
+                int(cell["cellIndex"]),
+                para,
+            ) or {}
+        return self._call_json(
+            "hwpdocument_mergeParagraph",
+            self._handle, sec, para,
+        ) or {}
+
+    def insert_paragraph(
+        self,
+        sec: int,
+        anchor_para: int,
+        position: str = "after",
+        placeholder: str = "",
+        cell: Optional[dict[str, int]] = None,
+    ) -> dict[str, Any]:
+        """Insert a new paragraph adjacent to ``anchor_para``.
+
+        ``position="after"``: split anchor at end → empty paragraph at
+        ``anchor_para+1`` → fill placeholder.
+        ``position="before"``: split anchor at start → empty paragraph at
+        ``anchor_para`` (original moves to ``anchor_para+1``) → fill placeholder.
+
+        Returns a history entry with ``kind="insert_paragraph"`` so undo can
+        replay the inverse (delete placeholder + merge).
+        """
+        if position not in ("before", "after"):
+            raise ValueError(f"position must be 'before' or 'after', got {position!r}")
+
+        if position == "after":
+            anchor_len = self.get_paragraph_length(sec, anchor_para, cell=cell)
+            self.split_paragraph(sec, anchor_para, anchor_len, cell=cell)
+            new_para = anchor_para + 1
+            split_offset = anchor_len
+        else:  # "before"
+            self.split_paragraph(sec, anchor_para, 0, cell=cell)
+            new_para = anchor_para
+            split_offset = 0
+
+        if placeholder:
+            self.insert_text(sec, new_para, 0, placeholder, cell=cell)
+
+        edit_id = self._next_edit_id
+        self._next_edit_id += 1
+        entry: dict[str, Any] = {
+            "id": edit_id,
+            "kind": "insert_paragraph",
+            "sec": sec,
+            "para": new_para,
+            "anchorPara": anchor_para,
+            "splitOffset": split_offset,
+            "position": position,
+            "placeholder": placeholder,
+            "cell": cell,
+            "undone": False,
+        }
+        self.edits.append(entry)
+        self.version += 1
+        return entry
+
     # ----- higher-level edit (M6R) --------------------------------------
 
     def apply_edit(
@@ -777,10 +880,47 @@ class DocumentSession:
         if entry is None:
             raise KeyError(f"edit {edit_id} not found")
 
+        kind = entry.get("kind", "text")
+        currently_undone = entry["undone"]
+
+        # ---- paragraph-insert undo/redo --------------------------------
+        if kind == "insert_paragraph":
+            sec = int(entry["sec"])
+            new_para = int(entry["para"])
+            anchor_para = int(entry["anchorPara"])
+            position = entry.get("position", "after")
+            placeholder = entry.get("placeholder", "") or ""
+            cell = entry.get("cell")
+
+            if not currently_undone:
+                # Apply → undone: delete placeholder, then merge to remove the
+                # empty paragraph stub. rhwp's ``mergeParagraph(sec, P)``
+                # merges paragraph P **into** P-1 (removes the boundary
+                # BEFORE P). So:
+                #   - position="after":  delete the new paragraph (at
+                #     ``new_para = anchor_para + 1``) by merging it into
+                #     ``anchor_para``. Call merge with ``P = new_para``.
+                #   - position="before": the original anchor is now at
+                #     ``new_para + 1``; merge it back down into the empty
+                #     stub at ``new_para``. Call merge with ``P = new_para + 1``.
+                if placeholder:
+                    self.delete_text(sec, new_para, 0, len(placeholder), cell=cell)
+                merge_at = new_para if position == "after" else new_para + 1
+                self.merge_paragraph(sec, merge_at, cell=cell)
+            else:
+                # Undone → redo: re-split + re-insert placeholder.
+                split_offset = int(entry.get("splitOffset", 0))
+                self.split_paragraph(sec, anchor_para, split_offset, cell=cell)
+                if placeholder:
+                    self.insert_text(sec, new_para, 0, placeholder, cell=cell)
+
+            entry["undone"] = not currently_undone
+            self.version += 1
+            return entry
+
         sec, para, off = entry["sec"], entry["para"], entry["charOffset"]
         cell = entry.get("cell")
         is_range = "endPara" in entry
-        currently_undone = entry["undone"]
 
         if is_range:
             if not currently_undone:

@@ -123,14 +123,21 @@ def _patch_section_xml(xml_bytes: bytes, edits: list[dict[str, Any]]) -> bytes:
 def _apply_single_edit(body_paragraphs: list, edit: dict[str, Any]) -> None:
     """Locate the target paragraph(s) and splice the edit in.
 
-    Two forms handled:
+    Three forms handled:
       - single paragraph (no ``endPara``): splice ``oldText`` worth of chars
         at ``(para, charOffset)`` with ``newText``.
       - cross paragraph (``endPara`` set): truncate start paragraph at
         ``charOffset``, drop paragraphs ``(para+1 .. endPara-1)`` entirely,
         merge the remainder of the end paragraph (from ``endCharOffset``)
         into the start paragraph. ``newText`` is spliced in between.
+      - paragraph insertion (``kind == "insert_paragraph"``): clone the
+        anchor ``<hp:p>`` as an empty sibling adjacent to the anchor and
+        seed it with the placeholder text.
     """
+    if edit.get("kind") == "insert_paragraph":
+        _apply_insert_paragraph(body_paragraphs, edit)
+        return
+
     cell = edit.get("cell")
     char_offset = int(edit["charOffset"])
     new_text = edit.get("newText", "")
@@ -257,6 +264,66 @@ def _apply_cross_para_cell_edit(
             _empty_paragraph_text(p)
     if end_off > 0:
         _splice_paragraph_text(end, 0, end_off, "")
+
+
+def _apply_insert_paragraph(body_paragraphs: list, edit: dict[str, Any]) -> None:
+    """Insert a fresh ``<hp:p>`` adjacent to the anchor.
+
+    The new paragraph clones the anchor's structural attributes (``paraPrIDRef``
+    + first-run ``charPrIDRef``) so the placeholder picks up the surrounding
+    style. It carries a single empty ``<hp:run>/<hp:t>`` containing the
+    placeholder text and a single-entry ``<hp:linesegarray>`` rooted at
+    ``textpos="0"`` — Rule 8 stays satisfied without further work.
+    """
+    anchor_idx = int(edit["anchorPara"])
+    position = edit.get("position", "after")
+    placeholder = edit.get("placeholder", "") or ""
+    cell = edit.get("cell")
+
+    if cell is None:
+        anchor = body_paragraphs[anchor_idx]
+    else:
+        parent_para = body_paragraphs[int(cell["parentParaIndex"])]
+        anchor = _resolve_cell_paragraph(
+            parent_para,
+            control_index=int(cell["controlIndex"]),
+            cell_index=int(cell["cellIndex"]),
+            cell_para_index=anchor_idx,
+        )
+
+    new_p = _build_empty_paragraph_clone(anchor, placeholder)
+    parent = anchor.getparent()
+    if parent is None:
+        return
+    insert_idx = parent.index(anchor) + (1 if position == "after" else 0)
+    parent.insert(insert_idx, new_p)
+
+
+def _build_empty_paragraph_clone(anchor, placeholder_text: str):
+    """Build a fresh ``<hp:p>`` mimicking the anchor's style with placeholder text."""
+    HP = _NS["hp"]
+    new_p = etree.Element(f"{{{HP}}}p", anchor.attrib)
+
+    # Mirror first-run charPrIDRef so the placeholder text inherits font/size.
+    first_run = anchor.find("hp:run", _NS)
+    run_attribs: dict[str, str] = {}
+    if first_run is not None and "charPrIDRef" in first_run.attrib:
+        run_attribs["charPrIDRef"] = first_run.attrib["charPrIDRef"]
+    new_run = etree.SubElement(new_p, f"{{{HP}}}run", run_attribs)
+    new_t = etree.SubElement(new_run, f"{{{HP}}}t")
+    new_t.text = placeholder_text
+
+    lsa = etree.SubElement(new_p, f"{{{HP}}}linesegarray")
+    new_seg = etree.SubElement(lsa, f"{{{HP}}}lineseg")
+    anchor_lsa = anchor.find("hp:linesegarray", _NS)
+    anchor_seg = anchor_lsa.find("hp:lineseg", _NS) if anchor_lsa is not None else None
+    if anchor_seg is not None:
+        for k, v in anchor_seg.attrib.items():
+            if k == "textpos":
+                continue
+            new_seg.set(k, v)
+    new_seg.set("textpos", "0")
+    return new_p
 
 
 def _empty_paragraph_text(paragraph) -> None:

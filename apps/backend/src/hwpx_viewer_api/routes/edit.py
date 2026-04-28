@@ -15,6 +15,8 @@ from ..schemas import (
     DocumentInfo,
     EditRequest,
     EditResponse,
+    ParagraphInsertRequest,
+    ParagraphInsertResponse,
     UndoRequest,
 )
 from ..services.upload_store import get_upload_store
@@ -103,6 +105,65 @@ async def edit(req: EditRequest) -> EditResponse:
         editId=int(edit_entry["id"]),
         document=_doc_info(entry),
         affectedPages=affected,
+    )
+
+
+@router.post("/api/paragraphs/insert", response_model=ParagraphInsertResponse)
+async def insert_paragraph(req: ParagraphInsertRequest) -> ParagraphInsertResponse:
+    """Insert a placeholder paragraph adjacent to ``(sec, para)``.
+
+    Phase 2.6 (E): adds a fresh ``<hp:p>`` so users can populate empty regions
+    without an existing text anchor. The placeholder is regular editable text —
+    re-selecting it goes through the normal edit/undo pipeline. The insert
+    itself is also reversible via ``/api/undo``.
+    """
+    entry = _entry_or_404(req.uploadId)
+    session = entry.session
+
+    cell = None
+    if req.cell is not None:
+        cell = {
+            "parentParaIndex": req.cell.parentParaIndex,
+            "controlIndex": req.cell.controlIndex,
+            "cellIndex": req.cell.cellIndex,
+        }
+
+    try:
+        edit_entry = session.insert_paragraph(
+            sec=req.sec,
+            anchor_para=req.para,
+            position=req.position,
+            placeholder=req.placeholder,
+            cell=cell,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "paragraph_insert.failed",
+            extra={
+                "upload_id": req.uploadId,
+                "sec": req.sec,
+                "para": req.para,
+                "position": req.position,
+            },
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "code": "PARAGRAPH_INSERT_ERROR",
+                    "message": "단락 삽입에 실패했습니다.",
+                    "detail": str(e)[:500],
+                    "recoverable": False,
+                }
+            },
+        ) from e
+
+    return ParagraphInsertResponse(
+        editId=int(edit_entry["id"]),
+        document=_doc_info(entry),
+        affectedPages=list(range(session.page_count)),
+        newPara=int(edit_entry["para"]),
+        placeholder=str(edit_entry.get("placeholder", "")),
     )
 
 

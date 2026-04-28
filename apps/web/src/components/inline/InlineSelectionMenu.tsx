@@ -7,7 +7,7 @@
  * (client pixel coords of the selection's top-center).
  */
 
-import { Edit3, Languages, MessageSquarePlus, Minimize, Pencil, Sparkles, X } from 'lucide-react';
+import { Edit3, Languages, ListPlus, MessageSquarePlus, Minimize, Pencil, Sparkles, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { InlineAction, InlineActionId } from '@/types';
@@ -33,10 +33,19 @@ interface Props {
   /** Invoked when the user clicks "대화로" — the selected text should be
    *  attached to the chat input as a quoted block (parent decides how). */
   onAttachToChat: () => void;
+  /** Phase 2.6 (E): insert a placeholder paragraph adjacent to the selected
+   *  paragraph. ``position`` defaults to 'after'. */
+  onInsertParagraph?: (position: 'before' | 'after') => void;
   onClose: () => void;
 }
 
-export function InlineSelectionMenu({ anchor, onAction, onAttachToChat, onClose }: Props) {
+export function InlineSelectionMenu({
+  anchor,
+  onAction,
+  onAttachToChat,
+  onInsertParagraph,
+  onClose,
+}: Props) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [adjustedX, setAdjustedX] = useState(anchor.x);
   const [mode, setMode] = useState<'actions' | 'rewrite-guide'>('actions');
@@ -246,6 +255,26 @@ export function InlineSelectionMenu({ anchor, onAction, onAttachToChat, onClose 
           <Edit3 size={11} />
           직접 수정
         </button>
+        {onInsertParagraph && (
+          <>
+            <div className="w-px h-4" style={{ backgroundColor: 'var(--border-subtle)' }} />
+            {/* "단락 추가" — insert a placeholder paragraph after the selected
+                paragraph so the user can populate empty regions. */}
+            <button
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onInsertParagraph('after');
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs hover:bg-bg-muted appearance-none"
+              style={{ color: 'var(--text-muted)' }}
+              title="선택한 단락 다음에 빈 단락(placeholder) 삽입"
+            >
+              <ListPlus size={11} />
+              단락 추가
+            </button>
+          </>
+        )}
         <div className="w-px h-4" style={{ backgroundColor: 'var(--border-subtle)' }} />
         {/* "대화로" — attach selection to chat instead of running an auto-rewrite. */}
         <button

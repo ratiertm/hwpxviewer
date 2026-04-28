@@ -15,6 +15,7 @@ import {
   downloadUrl,
   fetchPageSvg,
   getPageDef,
+  insertParagraph,
   type PageDef,
   revealInFinder,
   saveDocument,
@@ -306,6 +307,59 @@ export default function App() {
   const rejectInlineEdit = useCallback(() => {
     setEditing(null);
   }, [setEditing]);
+
+  /**
+   * Phase 2.6 (E) — insert a fresh placeholder paragraph adjacent to the
+   * selected paragraph. The new paragraph carries ``[내용을 입력하세요]`` as
+   * visible text so the user can immediately click on it (standard
+   * paragraph-select flow) and pick "직접 수정" to type real content.
+   */
+  const onInsertParagraph = useCallback(
+    async (position: 'before' | 'after') => {
+      if (!doc || !selection.active) return;
+      const sel = selection.active.selection;
+      const anchor = sel.start;
+      setEditBusy(true);
+      try {
+        const result = await insertParagraph(doc.info.uploadId, anchor.sec, anchor.para, {
+          position,
+          cell: anchor.cell ?? null,
+        });
+        const placeholderText = result.placeholder;
+        const newSel = {
+          start: {
+            sec: anchor.sec,
+            para: result.newPara,
+            charOffset: 0,
+            cell: anchor.cell ?? null,
+          },
+          length: placeholderText.length,
+          end: null,
+        };
+        setHistory((prev) => [
+          {
+            id: result.editId,
+            ts: Date.now(),
+            selection: newSel,
+            oldText: '',
+            newText: placeholderText,
+            action: position === 'after' ? '단락 추가 ↓' : '단락 추가 ↑',
+            undone: false,
+          },
+          ...prev,
+        ]);
+        await refreshAffectedPages(result.document, result.affectedPages);
+        closeMenu();
+        selection.clear();
+      } catch (e) {
+        const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
+        setError(msg);
+      } finally {
+        setEditBusy(false);
+      }
+    },
+    [doc, selection, refreshAffectedPages, closeMenu],
+  );
 
   // ----- chat-embedded patch apply/undo --------------------------------------
   const [busyPatchMsgIdx, setBusyPatchMsgIdx] = useState<number | null>(null);
@@ -728,6 +782,7 @@ export default function App() {
                   closeMenu();
                   selection.clear();
                 }}
+                onInsertParagraph={onInsertParagraph}
                 onClose={() => {
                   closeMenu();
                   selection.clear();

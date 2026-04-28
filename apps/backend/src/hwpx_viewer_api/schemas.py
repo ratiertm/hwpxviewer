@@ -202,6 +202,30 @@ class UndoRequest(BaseModel):
     editId: int
 
 
+class ParagraphInsertRequest(BaseModel):
+    """Insert a new paragraph adjacent to ``(sec, para)`` (Phase 2.6).
+
+    ``position == "after"``: split anchor at end → empty paragraph at
+    ``para + 1`` → seeded with ``placeholder``.
+    ``position == "before"``: split anchor at start → empty paragraph at
+    ``para`` (original moves to ``para + 1``) → seeded with ``placeholder``.
+    """
+    uploadId: str
+    sec: int = Field(ge=0)
+    para: int = Field(ge=0)
+    position: Literal["before", "after"] = "after"
+    placeholder: str = "[내용을 입력하세요]"
+    cell: CellRef | None = None
+
+
+class ParagraphInsertResponse(BaseModel):
+    editId: int
+    document: DocumentInfo
+    affectedPages: list[int]
+    newPara: int
+    placeholder: str
+
+
 class TextRangeRequest(BaseModel):
     uploadId: str
     selection: Selection
