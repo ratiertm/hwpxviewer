@@ -66,15 +66,17 @@ curl -s http://127.0.0.1:8000/openapi.json | python3 -m json.tool | head -40
 
 ---
 
-## 프론트엔드 (Vite, 보통 port 5174)
+## 프론트엔드 (Vite, 기본 port 5173)
 
 ```bash
 make dev
 # 또는
 pnpm -C apps/web dev
+# 포트를 명시하고 싶을 때:
+pnpm -C apps/web dev --host 127.0.0.1 --port 5173
 ```
 
-기본 포트 `5174` 가 점유 중이면 Vite 가 자동으로 다음 포트(`5175`, `5176`…) 로 잡으니 콘솔 출력 URL 을 확인.
+기본 포트 `5173` 이 점유 중이면 Vite 가 자동으로 다음 포트(`5174`, `5175`…) 로 잡으니 콘솔 출력 URL (`Local: http://localhost:XXXX/`) 을 확인.
 
 빌드 / 검증:
 
@@ -88,8 +90,10 @@ make test        # vitest run
 종료:
 
 ```bash
-lsof -ti:5174 | xargs kill
-# (필요 시 다른 포트 함께)
+lsof -ti:5173 | xargs kill
+# 다른 포트로 잡힌 경우 함께 정리:
+lsof -ti:5173 5174 5175 | xargs kill 2>/dev/null
+# 현재 떠 있는 Vite 인스턴스 확인:
 lsof -nP -iTCP -sTCP:LISTEN | grep -E "vite|517"
 ```
 
@@ -107,7 +111,7 @@ cd apps/backend && .venv/bin/uvicorn hwpx_viewer_api.main:app --reload --port 80
 make dev
 ```
 
-브라우저: `http://localhost:5174` (Vite 출력 URL 그대로)
+브라우저: `http://localhost:5173` (Vite 출력 URL 그대로 — 점유 시 5174/5175)
 
 프론트의 `VITE_API_BASE_URL` 미지정 시 `''` (상대경로) 로 동작 → 같은 호스트의 `/api/*` 가 백엔드를 가리키므로 dev proxy 또는 동일 호스트 가정.
 
@@ -139,9 +143,17 @@ sleep 2
 cd apps/backend && .venv/bin/uvicorn hwpx_viewer_api.main:app --reload --port 8000
 ```
 
-### Vite 가 5173 / 5174 가 아닌 포트로 뜸
+### Vite 가 5173 이 아닌 포트로 뜸
 
-이미 사용 중인 포트를 피해 다음 빈 포트로 잡힌 것. 콘솔의 `Local: http://localhost:XXXX/` 를 그대로 사용.
+기본 포트 `5173` 이 점유 중이면 Vite 가 자동으로 다음 빈 포트로 잡힙니다. 콘솔의 `Local: http://localhost:XXXX/` 를 그대로 사용.
+
+특정 포트를 강제하려면:
+
+```bash
+pnpm -C apps/web dev --host 127.0.0.1 --port 5173
+```
+
+이 명령은 포트가 비어있지 않으면 fail-fast 하므로, 점유 중인 프로세스를 먼저 종료해야 합니다.
 
 ### 한글 글자가 두부(tofu)로 보임
 
@@ -176,7 +188,7 @@ cd apps/backend && .venv/bin/uvicorn hwpx_viewer_api.main:app --reload --port 80
 ```bash
 # 두 서버 모두 종료
 lsof -ti:8000 | xargs kill 2>/dev/null
-lsof -ti:5174 5175 5176 | xargs kill 2>/dev/null
+lsof -ti:5173 5174 5175 | xargs kill 2>/dev/null
 
 # 빌드 결과물 / 캐시 제거
 make clean
