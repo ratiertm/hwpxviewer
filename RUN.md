@@ -181,6 +181,16 @@ pnpm -C apps/web dev --host 127.0.0.1 --port 5173
 
 업로드 또는 드래그 앤 드롭으로 테스트.
 
+## Deep-link 세션 복원 (`?upload=<id>`)
+
+업로드 후 브라우저 주소에 `?upload=<uploadId>` 를 붙여 다시 열면 같은 세션을 다른 탭/창에서 그대로 사용할 수 있습니다 (TTL 30분 한정).
+
+```
+http://localhost:5173/?upload=16420b81-6307-4284-a9cb-718f4d1bcead
+```
+
+서버 재기동/만료 시 404 + 빈 상태로 fallback (URL param 자동 정리).
+
 ---
 
 ## 종료 / 정리

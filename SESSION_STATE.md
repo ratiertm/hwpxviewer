@@ -5,14 +5,14 @@
 ## 최근 커밋 (origin/main 기준)
 
 ```
+8cb9817 feat: deep-link 세션 복원 (?upload=<id>)
+e085ead docs(RUN): 기본 포트 5173 으로 정정
+9b0229a docs: RUN.md — 서비스 기동 가이드
 6841c6a fix(web): #28 Shift+click 페이지 선택 4중 픽스
-4e00a90 chore: SESSION_STATE.md — Phase 2.6 (E) 진행 반영
 d88138e feat: Phase 2.6 (E) — placeholder 단락 삽입
-0607bc9 chore: SESSION_STATE.md — pre-compact snapshot
-fa28800 fix(web): page-settings gear — visible overlay
 ```
 
-origin/main 푸시 완료 (6841c6a).
+origin/main 푸시 완료 (8cb9817).
 
 ## 완료된 작업 (Phase 2 진행률)
 
@@ -84,6 +84,8 @@ ls /Users/leeeunmi/Projects/active/HwpxViewer/전문가활용내역서_채움.hw
 | 단락 삽입 (XML) | `apps/backend/.../services/hwpx_patcher.py` (`_apply_insert_paragraph`, `_build_empty_paragraph_clone`) |
 | 단락 삽입 라우트 | `apps/backend/.../routes/edit.py` (POST /api/paragraphs/insert) |
 | "단락 추가" 버튼 | `apps/web/src/components/inline/InlineSelectionMenu.tsx` (onInsertParagraph prop) |
+| Deep-link info | `apps/backend/.../routes/upload.py` (GET /api/info/{id}) |
+| Deep-link 복원 | `apps/web/src/App.tsx` (?upload=<id> 마운트 effect, deeplinkLoadedRef) |
 
 ## 알려진 디자인 결정
 
