@@ -69,6 +69,25 @@ export async function uploadHwpx(file: File): Promise<DocumentInfo> {
   return body.document;
 }
 
+/** Fetch existing session metadata by uploadId (deep-link resume).
+ *
+ * Returns ``null`` when the upload no longer exists on the server (404) so
+ * the caller can gracefully fall back to the empty state. Other errors
+ * (network, 5xx) bubble up as ``ApiError``.
+ */
+export async function getDocumentInfo(uploadId: string): Promise<DocumentInfo | null> {
+  const res = await fetch(`${API_BASE}/api/info/${encodeURIComponent(uploadId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const body = await res.json().catch(() => null) as
+      | { detail?: { error?: { code?: string; message?: string } } }
+      | null;
+    const err = body?.detail?.error;
+    throw new ApiError(res.status, err?.code ?? 'INFO_FAILED', err?.message ?? '세션 정보를 불러오지 못했습니다.');
+  }
+  return (await res.json()) as DocumentInfo;
+}
+
 export function downloadUrl(uploadId: string, version?: number): string {
   // ``version`` is appended as a cache-buster so the browser can never serve
   // a stale pre-edit download. The backend ignores the param.

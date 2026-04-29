@@ -3,6 +3,10 @@
 Design v0.3 §4.2. Minimal validation for M3R/M4R: extension + magic bytes
 (`PK\\x03\\x04` ZIP header) + size ceiling. More rigorous checks (MIME sniff,
 encrypted/corrupt detection) land in M4R `security/upload_validate.py`.
+
+Companion endpoint ``GET /api/info/{upload_id}`` returns the existing
+session metadata so clients can resume from a deep link (``?upload=<id>``)
+without re-uploading the bytes.
 """
 
 from __future__ import annotations
@@ -101,4 +105,32 @@ async def upload(file: UploadFile = File(...)) -> UploadResponse:
             pageCount=session.page_count,
             version=0,
         )
+    )
+
+
+@router.get("/api/info/{upload_id}", response_model=DocumentInfo)
+async def info(upload_id: str) -> DocumentInfo:
+    """Return DocumentInfo for an existing upload — used by ?upload=<id> deep links.
+
+    404 when the session is gone (server restart, TTL expiry, etc.) so the
+    client can fall back to the empty-state and prompt for a fresh upload.
+    """
+    entry = get_upload_store().get(upload_id)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "code": "UPLOAD_NOT_FOUND",
+                    "message": "이 문서 세션을 찾을 수 없습니다. 다시 업로드해 주세요.",
+                    "recoverable": True,
+                }
+            },
+        )
+    return DocumentInfo(
+        uploadId=upload_id,
+        fileName=entry.file_name,
+        fileSize=entry.file_size,
+        pageCount=entry.session.page_count,
+        version=entry.version,
     )

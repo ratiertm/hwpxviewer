@@ -14,6 +14,7 @@ import {
   applyEdit,
   downloadUrl,
   fetchPageSvg,
+  getDocumentInfo,
   getPageDef,
   insertParagraph,
   type PageDef,
@@ -175,6 +176,51 @@ export default function App() {
     },
     [handleFile],
   );
+
+  /** Deep-link resume: when the URL carries ``?upload=<id>``, ask the server
+   *  for the matching session metadata and load its SVGs without a fresh
+   *  upload. Falls back silently to the empty-state on 404 / network errors
+   *  so a stale link never blocks the empty-state UI.
+   *
+   *  Runs once on mount. ``loadedRef`` guards against React 18 strict-mode
+   *  double-invocation pulling the same session twice in dev. */
+  const deeplinkLoadedRef = useRef(false);
+  useEffect(() => {
+    if (deeplinkLoadedRef.current) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const uploadId = params.get('upload');
+    if (!uploadId) return;
+    deeplinkLoadedRef.current = true;
+
+    let cancelled = false;
+    (async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        const info = await getDocumentInfo(uploadId);
+        if (!info) {
+          setError('이 링크의 문서 세션을 찾을 수 없습니다. 파일을 다시 올려주세요.');
+          // Drop the param so a subsequent reload starts fresh.
+          const url = new URL(window.location.href);
+          url.searchParams.delete('upload');
+          window.history.replaceState({}, '', url.toString());
+          return;
+        }
+        const svgs = await loadAllPages(info);
+        if (cancelled) return;
+        setDoc({ info, svgs });
+        setDocumentInStore(info, svgs);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAllPages, setDocumentInStore]);
 
   /** Called by GenerateModal when SSE emits step="done". The uploadId is
    *  already registered server-side, so we just fetch SVGs and reuse the
